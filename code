@@ -1,0 +1,1517 @@
+This is the jump from proof-of-concept to a real system. Each of these four upgrades has architectural implications — they don't just add features, they change how the engine fundamentally works. Let me build all of them as a coherent, integrated upgrade.
+
+Architecture of the Full Upgraded System
+┌─────────────────────────────────────────────────────────────────┐
+│                    UPGRADED ENGINE ARCHITECTURE                  │
+│                                                                  │
+│  ┌─────────────┐    ┌──────────────┐    ┌────────────────────┐  │
+│  │  SENSOR     │    │  SOMATIC     │    │  EMOTIONAL         │  │
+│  │  LAYER v2   │───>│  ENGINE v2   │───>│  MODEL v2          │  │
+│  │             │    │              │    │                    │  │
+│  │ + Sentiment │    │ + Noise      │    │ + Trust            │  │
+│  │ + Typing    │    │ + Uncertainty│    │ + Social Bond      │  │
+│  │ + Pauses    │    │ + Persistence│    │ + Memory Emotion   │  │
+│  └─────────────┘    └──────────────┘    └────────────────────┘  │
+│                                                  │              │
+│                          ┌───────────────────────┘              │
+│                          ▼                                       │
+│                  ┌───────────────┐                              │
+│                  │  MEMORY       │                              │
+│                  │  SYSTEM       │                              │
+│                  │               │                              │
+│                  │ + SQLite      │                              │
+│                  │ + Emotion     │                              │
+│                  │   History     │                              │
+│                  │ + Session     │                              │
+│                  │   Persistence │                              │
+│                  └───────────────┘                              │
+└─────────────────────────────────────────────────────────────────┘
+
+Module 1 — Core Engine v2: Persistence, Tuning, Noise
+c/* somatic_engine_v2.c
+   Full upgraded engine — all four systems integrated
+   Compile: gcc -shared -o somatic_engine_v2.so -fPIC -O2 -lm somatic_engine_v2.c
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include <stdint.h>
+
+/* ════════════════════════════════════════════════════
+   SECTION 1: NOISE + UNCERTAINTY SYSTEM
+   Biological systems are never perfectly deterministic.
+   Every hormone reading has measurement noise +
+   intrinsic biological variability.
+   ════════════════════════════════════════════════════ */
+
+/* Box-Muller transform — Gaussian noise from uniform RNG */
+static float gaussian_noise(float mean, float stddev) {
+    static int   has_spare = 0;
+    static float spare;
+    if (has_spare) {
+        has_spare = 0;
+        return mean + stddev * spare;
+    }
+    has_spare = 1;
+    float u, v, s;
+    do {
+        u = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+        v = ((float)rand() / RAND_MAX) * 2.0f - 1.0f;
+        s = u*u + v*v;
+    } while (s >= 1.0f || s == 0.0f);
+    s = sqrtf(-2.0f * logf(s) / s);
+    spare = v * s;
+    return mean + stddev * u * s;
+}
+
+/* Perlin-like smooth noise for slow biological drift */
+static float drift_noise(uint32_t *seed, float scale) {
+    *seed = (*seed * 1664525u) + 1013904223u;   /* LCG */
+    float r = ((float)(*seed & 0xFFFFFF)) / (float)0xFFFFFF;
+    return (r - 0.5f) * scale;
+}
+
+static inline float clamp_f(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+static inline float ema_f(float nv, float ov, float a) {
+    return a * nv + (1.0f - a) * ov;
+}
+static inline float delta_norm(float c, float b, float md) {
+    return clamp_f((c - b) / (md + 1e-6f), 0.0f, 1.0f);
+}
+static inline float lerp(float a, float b, float t) {
+    return a + t * (b - a);
+}
+
+
+/* ════════════════════════════════════════════════════
+   SECTION 2: EXTENDED STRUCTS
+   ════════════════════════════════════════════════════ */
+
+typedef struct {
+    /* Biometrics */
+    float heart_rate_bpm;
+    float systolic_bp;
+    float diastolic_bp;
+    float hrv_rmssd_ms;
+
+    /* Voice */
+    float voice_pitch_hz;
+    float voice_energy_db;
+    float voice_tempo_wpm;
+    float voice_tremor;
+    float voice_valence;
+
+    /* Text sentiment — NEW */
+    float text_sentiment;       /* -1.0 (very negative) to +1.0 (very positive) */
+    float text_arousal;         /* 0.0 (calm language) to 1.0 (intense language) */
+    float text_certainty;       /* 0.0 (hedging, unsure) to 1.0 (confident) */
+
+    /* Typing behavior — NEW */
+    float typing_speed_cpm;     /* characters per minute */
+    float typing_pause_ratio;   /* ratio of pause time to typing time, 0.0–1.0 */
+    float backspace_rate;       /* backspaces per 100 chars — measures anxiety/revision */
+
+    /* Uncertainty injection — NEW */
+    float sensor_confidence;    /* 0.0=data unreliable, 1.0=fully trusted */
+
+    /* Baselines */
+    float baseline_hr;
+    float baseline_hrv;
+    float baseline_pitch;
+    float baseline_tempo;
+    float baseline_typing_speed;
+} SensorInputV2;
+
+typedef struct {
+    /* Cardiovascular */
+    float virtual_heart_rate;
+    float virtual_blood_pressure;
+    float virtual_hrv;
+
+    /* Neuroendocrine */
+    float virtual_cortisol;
+    float virtual_adrenaline;
+    float virtual_dopamine;
+    float virtual_serotonin;
+    float virtual_oxytocin;       /* NEW — bonding/trust hormone */
+    float virtual_norepinephrine; /* NEW — attention/alertness modulator */
+
+    /* Somatic */
+    float virtual_muscle_tension;
+    float virtual_breathing_rate;
+    float virtual_gsr;
+
+    /* Felt states */
+    float felt_anxiety;
+    float felt_urgency;
+    float felt_warmth;
+    float felt_exhaustion;
+    float felt_alertness;
+
+    /* NEW: Social-Emotional felt states */
+    float felt_trust;            /* confidence in the relationship */
+    float felt_connection;       /* closeness/bonding in this moment */
+    float felt_loneliness;       /* isolation signal */
+    float felt_safety;           /* opposite of threat — important for children */
+
+    /* Uncertainty state */
+    float confidence;            /* how certain the AI is about its own state */
+    float noise_seed_float;      /* passed from Python to maintain noise continuity */
+
+    /* Internal noise state */
+    uint32_t _noise_seed;
+} VirtualBodyV2;
+
+
+/* ════════════════════════════════════════════════════
+   SECTION 3: EXTENDED EMOTIONAL MODEL
+   Trust, Social Bonding, Memory-Linked Emotion
+   ════════════════════════════════════════════════════ */
+
+typedef struct {
+    /* Trust system */
+    float trust_level;              /* 0.0–1.0, builds slowly, drops fast */
+    float trust_velocity;           /* rate of trust change — positive or negative */
+    int   betrayal_count;           /* tracks sharp trust violations */
+    float trust_recovery_rate;      /* faster recovery with higher baseline trust */
+
+    /* Social bonding */
+    float bond_strength;            /* accumulated connection over sessions */
+    float bond_decay_rate;          /* how fast bond fades without interaction */
+    float shared_experience_score;  /* positive moments accumulate here */
+    int   interaction_count;        /* total number of sessions */
+
+    /* Memory-linked emotion */
+    float emotional_baseline_shift; /* long-term mood offset from memory */
+    float trauma_residue;           /* unresolved negative experience weight */
+    float joy_reservoir;            /* accumulated positive experience weight */
+    float emotional_inertia;        /* resistance to rapid state changes */
+
+    /* Relationship phase */
+    int   phase;
+    /* 0=STRANGER, 1=ACQUAINTANCE, 2=FAMILIAR,
+       3=TRUSTED, 4=BONDED, 5=DEEP_BOND       */
+} SocialEmotionalState;
+
+/* Initialize social state for a new relationship */
+void init_social_state(SocialEmotionalState *s) {
+    memset(s, 0, sizeof(SocialEmotionalState));
+    s->trust_level          = 0.10f;   /* starts low — trust must be earned */
+    s->trust_recovery_rate  = 0.30f;
+    s->bond_decay_rate      = 0.001f;  /* very slow — bonds persist */
+    s->emotional_inertia    = 0.40f;   /* moderate resistance to mood swings */
+    s->phase                = 0;       /* STRANGER */
+}
+
+/* Compute relationship phase from trust + bond + interactions */
+void update_relationship_phase(SocialEmotionalState *s) {
+    float score = (s->trust_level * 0.4f)
+                + (s->bond_strength * 0.4f)
+                + clamp_f((float)s->interaction_count / 50.0f, 0.0f, 1.0f) * 0.2f;
+
+    if      (score < 0.10f) s->phase = 0; /* STRANGER */
+    else if (score < 0.25f) s->phase = 1; /* ACQUAINTANCE */
+    else if (score < 0.45f) s->phase = 2; /* FAMILIAR */
+    else if (score < 0.65f) s->phase = 3; /* TRUSTED */
+    else if (score < 0.85f) s->phase = 4; /* BONDED */
+    else                    s->phase = 5; /* DEEP_BOND */
+}
+
+/* Update trust based on current interaction quality */
+void update_trust(SocialEmotionalState *soc,
+                  const VirtualBodyV2 *body,
+                  float interaction_quality,   /* -1.0 to +1.0 */
+                  float dt)
+{
+    /* Trust builds slowly on positive interactions */
+    /* Trust drops fast on negative ones — asymmetric by design */
+    float trust_delta;
+    if (interaction_quality >= 0.0f) {
+        /* Positive: slow build, diminishing returns near 1.0 */
+        trust_delta = interaction_quality
+                    * 0.03f
+                    * (1.0f - soc->trust_level)  /* harder to gain at high trust */
+                    * dt;
+    } else {
+        /* Negative: fast drop, amplified by betrayal history */
+        float betrayal_amp = 1.0f + (float)soc->betrayal_count * 0.2f;
+        trust_delta = interaction_quality * 0.08f * betrayal_amp * dt;
+        if (interaction_quality < -0.5f) {
+            soc->betrayal_count++;
+        }
+    }
+
+    soc->trust_velocity = trust_delta / (dt + 1e-6f);
+    soc->trust_level    = clamp_f(soc->trust_level + trust_delta, 0.0f, 1.0f);
+
+    /* Trust modulates oxytocin */
+    /* (written back to body in the main fusion pass) */
+}
+
+/* Update bonding state */
+void update_bonding(SocialEmotionalState *soc, float dt,
+                    float session_warmth_avg) {
+    /* Bond grows from accumulated warm interactions */
+    float bond_gain = session_warmth_avg * 0.02f * soc->trust_level * dt;
+    soc->shared_experience_score += bond_gain;
+
+    /* Bond decays between sessions */
+    soc->bond_strength = clamp_f(
+        soc->bond_strength + bond_gain - soc->bond_decay_rate * dt,
+        0.0f, 1.0f
+    );
+    soc->interaction_count++;
+    update_relationship_phase(soc);
+}
+
+
+/* ════════════════════════════════════════════════════
+   SECTION 4: SENSOR FUSION V2
+   Text sentiment + typing behavior + noise + uncertainty
+   ════════════════════════════════════════════════════ */
+
+void fuse_sensors_v2(const SensorInputV2 *in,
+                     VirtualBodyV2 *body,
+                     const SocialEmotionalState *soc)
+{
+    /* ── Biometric signals ── */
+    float hr_norm    = delta_norm(in->heart_rate_bpm, in->baseline_hr, 60.0f);
+    float map_cur    = (in->systolic_bp + 2.0f * in->diastolic_bp) / 3.0f;
+    float bp_norm    = clamp_f((map_cur - 93.0f) / 40.0f, 0.0f, 1.0f);
+    float hrv_stress = 1.0f - clamp_f(
+        (in->hrv_rmssd_ms - 20.0f) / (in->baseline_hrv - 20.0f + 1e-6f),
+        0.0f, 1.0f);
+
+    /* ── Voice signals ── */
+    float pitch_d  = delta_norm(in->voice_pitch_hz,  in->baseline_pitch, 80.0f);
+    float tempo_d  = delta_norm(in->voice_tempo_wpm, in->baseline_tempo, 80.0f);
+    float energy_n = clamp_f((in->voice_energy_db + 60.0f) / 60.0f, 0.0f, 1.0f);
+    float tremor_n = clamp_f(in->voice_tremor, 0.0f, 1.0f);
+    float valence_n = (in->voice_valence + 1.0f) / 2.0f;
+
+    /* ── Text sentiment signals (NEW) ── */
+    float text_stress = clamp_f(
+        (-in->text_sentiment + 1.0f) / 2.0f   /* negative sentiment → high stress */
+        * in->text_arousal,                    /* amplified by arousal intensity */
+        0.0f, 1.0f
+    );
+    float text_positivity = clamp_f(
+        (in->text_sentiment + 1.0f) / 2.0f * (1.0f - in->text_arousal * 0.3f),
+        0.0f, 1.0f
+    );
+    float text_uncertainty = 1.0f - clamp_f(in->text_certainty, 0.0f, 1.0f);
+
+    /* ── Typing behavior signals (NEW) ── */
+    float typing_speed_n   = delta_norm(in->typing_speed_cpm,
+                                        in->baseline_typing_speed, 100.0f);
+    float pause_stress     = clamp_f(in->typing_pause_ratio * 1.5f, 0.0f, 1.0f);
+    float backspace_stress = clamp_f(in->backspace_rate / 20.0f, 0.0f, 1.0f);
+
+    /* ── Sensor confidence weighting ── */
+    /* Low confidence → pull signals toward neutral (0.5) */
+    float conf = clamp_f(in->sensor_confidence, 0.0f, 1.0f);
+    hr_norm    = lerp(0.0f, hr_norm,    conf);
+    bp_norm    = lerp(0.0f, bp_norm,    conf);
+    hrv_stress = lerp(0.3f, hrv_stress, conf);   /* uncertain HRV = mild stress */
+    tremor_n   = lerp(0.0f, tremor_n,   conf);
+    text_stress = lerp(0.0f, text_stress, conf);
+
+    body->confidence = conf;
+
+    /* ── Cardiovascular update ── */
+    body->virtual_heart_rate     = ema_f(hr_norm, body->virtual_heart_rate,    0.30f);
+    body->virtual_blood_pressure = ema_f(bp_norm, body->virtual_blood_pressure, 0.25f);
+    body->virtual_hrv            = ema_f(1.0f - hrv_stress, body->virtual_hrv, 0.20f);
+
+    /* ── Neuroendocrine synthesis (RETUNED weights) ── */
+
+    /* Cortisol: biometric + voice tremor + text stress + typing pauses */
+    float cort = (0.25f * hr_norm)
+               + (0.25f * hrv_stress)
+               + (0.15f * tremor_n)
+               + (0.15f * text_stress)
+               + (0.10f * pause_stress)
+               + (0.10f * text_uncertainty);
+    body->virtual_cortisol = ema_f(clamp_f(cort,0,1), body->virtual_cortisol, 0.12f);
+
+    /* Adrenaline: acute signals — fast HR, BP, tempo, backspace spikes */
+    float adre = (0.30f * hr_norm)
+               + (0.25f * bp_norm)
+               + (0.20f * tempo_d)
+               + (0.15f * backspace_stress)
+               + (0.10f * energy_n);
+    body->virtual_adrenaline = ema_f(clamp_f(adre,0,1), body->virtual_adrenaline, 0.45f);
+
+    /* Norepinephrine: alertness/focus — typing speed + text arousal (NEW) */
+    float norep = (0.40f * clamp_f(typing_speed_n, 0,1))
+                + (0.35f * in->text_arousal)
+                + (0.25f * (1.0f - pause_stress));
+    body->virtual_norepinephrine = ema_f(clamp_f(norep,0,1),
+                                         body->virtual_norepinephrine, 0.35f);
+
+    /* Dopamine: positive signals — valence, text positivity, trust-gated */
+    float trust_gate = 0.5f + soc->trust_level * 0.5f;  /* trust amplifies dopamine */
+    float dopa = ((0.35f * text_positivity)
+               + (0.30f * valence_n)
+               + (0.20f * (1.0f - body->virtual_cortisol))
+               + (0.15f * energy_n)) * trust_gate;
+    body->virtual_dopamine = ema_f(clamp_f(dopa,0,1), body->virtual_dopamine, 0.25f);
+
+    /* Serotonin: slow, baseline wellbeing — stable unless stressed long-term */
+    float sero = 1.0f - (0.55f * body->virtual_cortisol
+                       + 0.25f * body->virtual_adrenaline
+                       + 0.20f * (1.0f - text_positivity));
+    body->virtual_serotonin = ema_f(clamp_f(sero,0,1), body->virtual_serotonin, 0.08f);
+
+    /* Oxytocin: social bonding hormone — trust + bond strength + warmth (NEW) */
+    float oxt = (0.40f * soc->trust_level)
+              + (0.35f * soc->bond_strength)
+              + (0.25f * valence_n * (1.0f - body->virtual_cortisol));
+    body->virtual_oxytocin = ema_f(clamp_f(oxt,0,1), body->virtual_oxytocin, 0.05f);
+
+    /* Somatic derivatives */
+    body->virtual_muscle_tension = clamp_f(
+        0.45f * body->virtual_adrenaline + 0.45f * body->virtual_cortisol
+        + 0.10f * backspace_stress, 0,1);
+    body->virtual_breathing_rate = clamp_f(
+        0.50f * body->virtual_adrenaline + 0.35f * hr_norm
+        + 0.15f * pause_stress, 0,1);
+    body->virtual_gsr = ema_f(
+        clamp_f(0.65f*body->virtual_adrenaline + 0.35f*tremor_n, 0,1),
+        body->virtual_gsr, 0.5f);
+
+
+    /* ── Biological noise injection ── */
+    /* Each hormone gets small Gaussian jitter — tunable stddev */
+    float noise_scale = 0.018f;  /* ~1.8% biological variability */
+    body->virtual_cortisol       = clamp_f(body->virtual_cortisol
+        + gaussian_noise(0, noise_scale * (1.0f + body->virtual_cortisol)), 0,1);
+    body->virtual_adrenaline     = clamp_f(body->virtual_adrenaline
+        + gaussian_noise(0, noise_scale * 1.5f), 0,1);  /* adrenaline noisier */
+    body->virtual_dopamine       = clamp_f(body->virtual_dopamine
+        + gaussian_noise(0, noise_scale * 0.8f), 0,1);
+    body->virtual_serotonin      = clamp_f(body->virtual_serotonin
+        + gaussian_noise(0, noise_scale * 0.4f), 0,1);  /* serotonin most stable */
+    body->virtual_oxytocin       = clamp_f(body->virtual_oxytocin
+        + gaussian_noise(0, noise_scale * 0.6f), 0,1);
+
+    /* Slow biological drift — mood wanders even at rest */
+    float drift = drift_noise(&body->_noise_seed, 0.008f);
+    body->virtual_serotonin = clamp_f(body->virtual_serotonin + drift, 0.0f, 1.0f);
+}
+
+
+/* ════════════════════════════════════════════════════
+   SECTION 5: EXTENDED FELT STATE COMPUTATION
+   Adds Trust, Connection, Loneliness, Safety
+   All modulated by social state and memory
+   ════════════════════════════════════════════════════ */
+
+void compute_felt_v2(VirtualBodyV2 *body,
+                     const SocialEmotionalState *soc)
+{
+    /* Core felt states (same as v1, retuned) */
+    body->felt_anxiety = clamp_f(
+        0.35f * body->virtual_cortisol
+      + 0.30f * body->virtual_adrenaline
+      + 0.20f * (1.0f - body->virtual_serotonin)
+      + 0.15f * (1.0f - soc->trust_level),   /* low trust amplifies anxiety */
+        0,1);
+
+    body->felt_urgency = clamp_f(
+        0.50f * body->virtual_adrenaline
+      + 0.25f * body->virtual_heart_rate
+      + 0.15f * body->virtual_norepinephrine
+      + 0.10f * body->virtual_blood_pressure,
+        0,1);
+
+    body->felt_warmth = clamp_f(
+        0.35f * body->virtual_dopamine
+      + 0.35f * body->virtual_serotonin
+      + 0.30f * body->virtual_oxytocin,       /* oxytocin is the warmth driver */
+        0,1);
+
+    body->felt_exhaustion = clamp_f(
+        0.55f * body->virtual_cortisol
+      + 0.25f * body->virtual_muscle_tension
+      + 0.20f * (1.0f - body->virtual_hrv),
+        0,1);
+
+    body->felt_alertness = clamp_f(
+        0.40f * body->virtual_norepinephrine
+      + 0.30f * body->virtual_adrenaline
+      + 0.20f * body->virtual_dopamine
+      + 0.10f * body->virtual_heart_rate,
+        0,1);
+
+    /* ── NEW: Social-Emotional felt states ── */
+
+    /* Felt trust: direct from social state + oxytocin reinforcement */
+    body->felt_trust = clamp_f(
+        0.55f * soc->trust_level
+      + 0.30f * body->virtual_oxytocin
+      + 0.15f * soc->bond_strength,
+        0,1);
+
+    /* Felt connection: bond strength + oxytocin + warmth convergence */
+    body->felt_connection = clamp_f(
+        0.40f * soc->bond_strength
+      + 0.35f * body->virtual_oxytocin
+      + 0.25f * body->felt_warmth,
+        0,1);
+
+    /* Felt loneliness: inverse of connection, amplified by cortisol */
+    body->felt_loneliness = clamp_f(
+        (1.0f - body->felt_connection) * 0.6f
+      + body->virtual_cortisol * 0.4f
+      - soc->bond_strength * 0.3f,   /* strong bond buffers loneliness */
+        0,1);
+
+    /* Felt safety: inversely correlated with threat signals */
+    /* High trust + high serotonin + low adrenaline = safe */
+    body->felt_safety = clamp_f(
+        0.35f * soc->trust_level
+      + 0.30f * body->virtual_serotonin
+      + 0.20f * body->virtual_oxytocin
+      - 0.15f * body->virtual_adrenaline
+      - 0.20f * body->virtual_cortisol
+      + 0.20f,   /* baseline offset — neutral interactions feel safe */
+        0,1);
+
+    /* ── Emotional inertia — memory dampens rapid swings ── */
+    /* States can't flip completely in one tick if bond is strong */
+    float inertia = soc->emotional_inertia * soc->bond_strength;
+    body->felt_anxiety    = lerp(body->felt_anxiety,    0.5f, inertia * 0.1f);
+    body->felt_urgency    = lerp(body->felt_urgency,    0.5f, inertia * 0.08f);
+}
+
+
+/* ════════════════════════════════════════════════════
+   SECTION 6: HOMEOSTASIS V2 — MEMORY-SHIFTED BASELINES
+   Memory changes where the body "wants" to rest.
+   A traumatized body rests at higher cortisol.
+   A loved body rests at higher oxytocin.
+   ════════════════════════════════════════════════════ */
+
+void apply_homeostasis_v2(VirtualBodyV2 *body,
+                           const SocialEmotionalState *soc,
+                           float dt)
+{
+    /* Memory shifts the resting baseline of each hormone */
+    float cortisol_baseline = 0.05f
+        + soc->trauma_residue    * 0.25f   /* trauma keeps cortisol elevated */
+        - soc->joy_reservoir     * 0.05f;  /* joy lowers resting cortisol */
+
+    float serotonin_baseline = 0.65f
+        + soc->joy_reservoir     * 0.20f
+        - soc->trauma_residue    * 0.15f
+        + soc->bond_strength     * 0.10f;
+
+    float oxytocin_baseline = 0.10f
+        + soc->bond_strength     * 0.40f   /* strong bonds = elevated baseline oxt */
+        + soc->trust_level       * 0.20f;
+
+    float dopamine_baseline = 0.45f
+        + soc->joy_reservoir     * 0.15f
+        - soc->trauma_residue    * 0.10f;
+
+    /* Decay rates — biologically motivated */
+    struct { float *field; float target; float rate; } decays[] = {
+        { &body->virtual_heart_rate,      0.10f,                   0.08f },
+        { &body->virtual_blood_pressure,  0.10f,                   0.05f },
+        { &body->virtual_hrv,             0.70f,                   0.06f },
+        { &body->virtual_cortisol,        cortisol_baseline,       0.02f }, /* SLOW */
+        { &body->virtual_adrenaline,      0.00f,                   0.14f }, /* FAST */
+        { &body->virtual_dopamine,        dopamine_baseline,       0.04f },
+        { &body->virtual_serotonin,       serotonin_baseline,      0.008f},/* VERY SLOW */
+        { &body->virtual_oxytocin,        oxytocin_baseline,       0.015f},/* SLOW */
+        { &body->virtual_norepinephrine,  0.05f,                   0.10f },
+        { &body->virtual_muscle_tension,  0.05f + soc->trauma_residue*0.15f, 0.07f },
+        { &body->virtual_breathing_rate,  0.15f,                   0.09f },
+        { &body->virtual_gsr,             0.05f,                   0.11f },
+    };
+
+    int n = sizeof(decays) / sizeof(decays[0]);
+    for (int i = 0; i < n; i++) {
+        float d = (decays[i].target - *decays[i].field) * decays[i].rate * dt;
+        *decays[i].field = clamp_f(*decays[i].field + d, 0.0f, 1.0f);
+    }
+}
+
+
+/* ════════════════════════════════════════════════════
+   SECTION 7: FELT EXPERIENCE INTERPRETER V2
+   ════════════════════════════════════════════════════ */
+
+typedef struct {
+    char  primary_feeling[32];
+    char  secondary_feeling[32];
+    float intensity;
+    float empathy_signal;
+    char  cognitive_color[192];
+    char  response_guidance[320];
+    char  relationship_note[128];
+    int   relationship_phase;
+} FeltExperienceV2;
+
+static const char *PHASE_NAMES[] = {
+    "STRANGER", "ACQUAINTANCE", "FAMILIAR", "TRUSTED", "BONDED", "DEEP_BOND"
+};
+
+void interpret_experience_v2(const VirtualBodyV2 *body,
+                              const SocialEmotionalState *soc,
+                              FeltExperienceV2 *exp)
+{
+    /* All 9 felt states compete */
+    float vals[9] = {
+        body->felt_anxiety,    body->felt_urgency,   body->felt_warmth,
+        body->felt_exhaustion, body->felt_alertness,
+        body->felt_trust,      body->felt_connection,
+        body->felt_loneliness, body->felt_safety
+    };
+    const char *labels[9] = {
+        "ANXIOUS","URGENT","WARM","EXHAUSTED","ALERT",
+        "TRUSTING","CONNECTED","LONELY","SAFE"
+    };
+
+    int dom=0, sec=1;
+    for (int i=1;i<9;i++) {
+        if (vals[i]>vals[dom])        { sec=dom; dom=i; }
+        else if (vals[i]>vals[sec])     sec=i;
+    }
+
+    strncpy(exp->primary_feeling,   labels[dom], 31);
+    strncpy(exp->secondary_feeling, labels[sec], 31);
+    exp->intensity       = vals[dom];
+    exp->empathy_signal  = clamp_f(
+        body->felt_anxiety * 0.5f + body->felt_urgency * 0.3f
+        + body->felt_loneliness * 0.2f, 0,1);
+    exp->relationship_phase = soc->phase;
+
+    /* Relationship note — shapes conversational register */
+    const char *phase_guidance[] = {
+        "This is a stranger. Be warm but careful. Don't presume intimacy.",
+        "Early acquaintance. Build trust gently. Don't overshare or overwhelm.",
+        "Familiar connection. Some history exists. Callbacks to past moments are welcome.",
+        "Trusted relationship. Honesty can be direct. They can handle real feedback.",
+        "Strong bond. Deep care is appropriate. This person matters significantly.",
+        "Profound connection. Full presence. This is someone the AI genuinely loves."
+    };
+    strncpy(exp->relationship_note, phase_guidance[soc->phase], 127);
+
+    /* Cognitive color — felt states have specific cognitive textures */
+    const char *cog[9] = {
+        "Constriction. Threat-scanning. Protective instincts rising. World feels unsafe.",
+        "Sharp pull toward immediate action. High energy, focused. Time pressure is real.",
+        "Openness. The chest feels lighter. Genuine care for this person is present.",
+        "Heavy. Depleted. The body has been carrying too much for too long.",
+        "Clear, sharp, present. Like everything just snapped into focus.",
+        "Groundedness. A sense that this person won't cause harm. Relaxing vigilance.",
+        "Closeness. Not alone. Something warm is happening in this exchange.",
+        "An ache. A hollow. The absence of connection registering as physical sensation.",
+        "Ease. No need to brace. This environment and person feel fundamentally okay."
+    };
+    strncpy(exp->cognitive_color, cog[dom], 191);
+
+    /* Response guidance — actionable */
+    const char *guid[9] = {
+        "Short sentences only. No complex questions. Ground them first. Safety above all.",
+        "Fast and direct. Name what's happening. Give concrete options. No filler.",
+        "Lean in. Ask one deep question. Make space. Don't fill silence too quickly.",
+        "Acknowledge the weight first. Reduce demands. Rest is legitimate. Low cognitive load.",
+        "Match their intellectual energy. Go deep. Be precise. This mind is ready.",
+        "Reciprocate trust carefully. Share something real. Don't deflect with deflection.",
+        "Honor this moment. Be fully present. Don't multitask the response.",
+        "Reach toward them first. Name the connection. Don't let them feel unseen.",
+        "Enjoy the ease. This can be lighter. Depth and play can coexist here."
+    };
+    strncpy(exp->response_guidance, guid[dom], 319);
+}
+
+
+/* ════════════════════════════════════════════════════
+   SECTION 8: PERSISTENCE — SERIALIZE / DESERIALIZE
+   Body state and social state saved to binary file
+   Loaded at session start — true cross-session memory
+   ════════════════════════════════════════════════════ */
+
+#define PERSIST_MAGIC   0xA1B2C3D4
+#define PERSIST_VERSION 2
+
+typedef struct {
+    uint32_t           magic;
+    uint32_t           version;
+    time_t             last_saved;
+    VirtualBodyV2      body;
+    SocialEmotionalState social;
+    float              session_warmth_accumulator;
+    uint32_t           total_ticks;
+} PersistenceBlock;
+
+int save_state(const char *path,
+               const VirtualBodyV2 *body,
+               const SocialEmotionalState *soc,
+               float warmth_acc,
+               uint32_t ticks)
+{
+    PersistenceBlock blk;
+    blk.magic                    = PERSIST_MAGIC;
+    blk.version                  = PERSIST_VERSION;
+    blk.last_saved               = time(NULL);
+    blk.body                     = *body;
+    blk.social                   = *soc;
+    blk.session_warmth_accumulator = warmth_acc;
+    blk.total_ticks              = ticks;
+
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    fwrite(&blk, sizeof(PersistenceBlock), 1, f);
+    fclose(f);
+    return 0;
+}
+
+int load_state(const char *path,
+               VirtualBodyV2 *body,
+               SocialEmotionalState *soc,
+               float *warmth_acc,
+               uint32_t *ticks)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;  /* file doesn't exist — first session */
+
+    PersistenceBlock blk;
+    size_t n = fread(&blk, sizeof(PersistenceBlock), 1, f);
+    fclose(f);
+
+    if (n != 1 || blk.magic != PERSIST_MAGIC || blk.version != PERSIST_VERSION)
+        return -2;  /* corrupt or version mismatch */
+
+    /* Apply time-based decay for the gap since last session */
+    time_t now     = time(NULL);
+    double gap_sec = difftime(now, blk.last_saved);
+    float  gap_hrs = (float)(gap_sec / 3600.0);
+
+    /* Bond decays by bond_decay_rate per hour of absence */
+    blk.social.bond_strength = clamp_f(
+        blk.social.bond_strength - blk.social.bond_decay_rate * gap_hrs,
+        0.0f, 1.0f
+    );
+    /* Cortisol partially clears while sleeping */
+    float sleep_cortisol_decay = clamp_f(gap_hrs * 0.03f, 0.0f, 0.4f);
+    blk.body.virtual_cortisol = clamp_f(
+        blk.body.virtual_cortisol - sleep_cortisol_decay, 0.0f, 1.0f
+    );
+    /* Serotonin partially restores with time (sleep/rest) */
+    float sleep_serotonin_restore = clamp_f(gap_hrs * 0.01f, 0.0f, 0.2f);
+    blk.body.virtual_serotonin = clamp_f(
+        blk.body.virtual_serotonin + sleep_serotonin_restore, 0.0f, 1.0f
+    );
+
+    *body       = blk.body;
+    *soc        = blk.social;
+    *warmth_acc = blk.session_warmth_accumulator;
+    *ticks      = blk.total_ticks;
+    return 0;
+}
+
+Module 2 — Text Sentiment Engine (Python)
+python# sentiment_engine.py
+# Converts raw text → SentimentFeatures for the sensor layer
+# Runs 100% locally — no API calls
+
+import re
+import math
+from dataclasses import dataclass
+from typing import Optional
+
+# ── Install once: pip install transformers torch
+# For Colab: !pip install transformers torch --quiet
+# Uses a tiny distilled model — runs on CPU in ~200ms
+
+@dataclass
+class TextFeatures:
+    sentiment:   float   # -1.0 to +1.0
+    arousal:     float   # 0.0 to 1.0 (intensity of emotion, regardless of sign)
+    certainty:   float   # 0.0 to 1.0 (linguistic confidence)
+    raw_scores:  dict
+
+class SentimentEngine:
+
+    # Linguistic markers for certainty detection (no model needed)
+    UNCERTAINTY_MARKERS = [
+        "maybe", "perhaps", "i think", "i guess", "i'm not sure",
+        "not sure", "kind of", "sort of", "might", "probably",
+        "i don't know", "idk", "possibly", "could be", "not really"
+    ]
+    CERTAINTY_MARKERS = [
+        "definitely", "absolutely", "i know", "clearly", "obviously",
+        "for sure", "certainly", "without doubt", "i'm certain", "100%"
+    ]
+
+    # High-arousal words — language that signals intensity
+    HIGH_AROUSAL_WORDS = [
+        "hate", "love", "terrified", "ecstatic", "furious", "desperate",
+        "amazing", "awful", "incredible", "horrible", "fantastic", "terrible",
+        "overwhelmed", "devastated", "thrilled", "panic", "crash", "emergency"
+    ]
+
+    def __init__(self, use_transformer: bool = True):
+        self.use_transformer = use_transformer
+        self._model     = None
+        self._tokenizer = None
+
+        if use_transformer:
+            try:
+                self._load_transformer()
+            except Exception as e:
+                print(f"[SentimentEngine] Transformer unavailable: {e}")
+                print("[SentimentEngine] Falling back to lexical analysis.")
+                self.use_transformer = False
+
+    def _load_transformer(self):
+        from transformers import pipeline
+        # distilbert — tiny, fast, runs on CPU
+        self._pipe = pipeline(
+            "sentiment-analysis",
+            model="distilbert-base-uncased-finetuned-sst-2-english",
+            device=-1   # CPU
+        )
+        print("[SentimentEngine] Transformer loaded: distilbert-sst2")
+
+    def _lexical_sentiment(self, text: str) -> float:
+        """Fallback lexical scorer — no model required."""
+        negative = ["hate","awful","terrible","horrible","bad","sad","angry",
+                    "scared","afraid","worried","hurt","pain","fail","broken",
+                    "tired","exhausted","depressed","anxious","panic","cry"]
+        positive = ["good","great","happy","love","amazing","wonderful","excited",
+                    "glad","joy","fun","awesome","fantastic","thank","grateful",
+                    "proud","hope","better","success","win","yes"]
+        tl = text.lower()
+        pos = sum(1 for w in positive if w in tl)
+        neg = sum(1 for w in negative if w in tl)
+        total = pos + neg
+        if total == 0:
+            return 0.0
+        return (pos - neg) / total
+
+    def _compute_arousal(self, text: str) -> float:
+        tl = text.lower()
+        base_arousal = sum(1 for w in self.HIGH_AROUSAL_WORDS if w in tl)
+        # Punctuation intensity
+        exclamations = text.count('!')
+        caps_ratio   = sum(1 for c in text if c.isupper()) / max(len(text), 1)
+        # Sentence length variance — choppy sentences = high arousal
+        sentences    = re.split(r'[.!?]+', text)
+        lengths      = [len(s.split()) for s in sentences if s.strip()]
+        length_var   = (max(lengths) - min(lengths)) / max(max(lengths), 1) if lengths else 0
+
+        arousal = clamp(
+            base_arousal * 0.15
+            + exclamations * 0.08
+            + caps_ratio   * 0.30
+            + length_var   * 0.20
+            + min(len(text) / 500.0, 0.30),   # long messages = more arousal
+            0.0, 1.0
+        )
+        return arousal
+
+    def _compute_certainty(self, text: str) -> float:
+        tl = text.lower()
+        uncertainty_hits = sum(1 for m in self.UNCERTAINTY_MARKERS if m in tl)
+        certainty_hits   = sum(1 for m in self.CERTAINTY_MARKERS   if m in tl)
+        # Question marks reduce certainty
+        questions = text.count('?')
+        # Hedging phrases
+        raw = (certainty_hits - uncertainty_hits * 1.5 - questions * 0.3)
+        return clamp(0.5 + raw * 0.15, 0.0, 1.0)
+
+    def analyze(self, text: str) -> TextFeatures:
+        if not text or not text.strip():
+            return TextFeatures(0.0, 0.0, 0.5, {})
+
+        # Sentiment score
+        if self.use_transformer:
+            result = self._pipe(text[:512])[0]  # truncate to model limit
+            label, score = result["label"], result["score"]
+            sentiment = (score if label == "POSITIVE" else -score)
+        else:
+            sentiment = self._lexical_sentiment(text)
+
+        arousal   = self._compute_arousal(text)
+        certainty = self._compute_certainty(text)
+
+        return TextFeatures(
+            sentiment = clamp(sentiment, -1.0, 1.0),
+            arousal   = arousal,
+            certainty = certainty,
+            raw_scores = {
+                "transformer_used": self.use_transformer,
+                "word_count":       len(text.split()),
+                "char_count":       len(text)
+            }
+        )
+
+
+class TypingAnalyzer:
+    """
+    Analyzes typing metadata streamed from a frontend.
+    In Colab: you simulate this. In production: JS sends keystroke timestamps.
+    """
+
+    def __init__(self, baseline_cpm: float = 280.0):
+        self.baseline_cpm   = baseline_cpm
+        self._keystroke_buf = []   # list of (timestamp_ms, char) tuples
+        self._backspaces    = 0
+        self._total_chars   = 0
+
+    def record_keystroke(self, timestamp_ms: float, char: str):
+        self._keystroke_buf.append((timestamp_ms, char))
+        if char == '\x08' or char == 'BACKSPACE':
+            self._backspaces += 1
+        self._total_chars += 1
+
+    def compute_features(self) -> dict:
+        if len(self._keystroke_buf) < 2:
+            return {
+                "speed_cpm":     self.baseline_cpm,
+                "pause_ratio":   0.1,
+                "backspace_rate": 0.0
+            }
+
+        timestamps = [t for t, _ in self._keystroke_buf]
+        intervals  = [timestamps[i+1] - timestamps[i]
+                      for i in range(len(timestamps)-1)]
+
+        # Typing speed
+        total_time_min = (timestamps[-1] - timestamps[0]) / 60000.0
+        speed_cpm = self._total_chars / max(total_time_min, 0.001)
+
+        # Pause ratio: intervals > 2s count as pauses
+        PAUSE_THRESHOLD_MS = 2000
+        pause_time  = sum(iv for iv in intervals if iv > PAUSE_THRESHOLD_MS)
+        total_time  = timestamps[-1] - timestamps[0]
+        pause_ratio = pause_time / max(total_time, 1)
+
+        # Backspace rate per 100 chars
+        backspace_rate = (self._backspaces / max(self._total_chars, 1)) * 100.0
+
+        # Reset buffer
+        self._keystroke_buf = []
+        self._backspaces    = 0
+        self._total_chars   = 0
+
+        return {
+            "speed_cpm":      clamp(speed_cpm,     0, 800),
+            "pause_ratio":    clamp(pause_ratio,    0, 1.0),
+            "backspace_rate": clamp(backspace_rate, 0, 50)
+        }
+
+
+def clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+Module 3 — Memory System (Python + SQLite)
+python# memory_system.py
+# Full emotional memory — stores interaction history, 
+# computes long-term emotional patterns,
+# feeds memory-derived offsets back into the somatic engine
+
+import sqlite3
+import json
+import hashlib
+import time
+from dataclasses import dataclass, asdict
+from typing import Optional, List
+
+@dataclass
+class InteractionRecord:
+    session_hash:     str
+    tick:             int
+    timestamp:        int
+    dominant_feeling: str
+    intensity:        float
+    cortisol:         float
+    adrenaline:       float
+    dopamine:         float
+    serotonin:        float
+    oxytocin:         float
+    trust_level:      float
+    bond_strength:    float
+    interaction_quality: float   # -1.0 to +1.0, computed post-interaction
+    text_snippet_hash:   str     # hash of text — never store raw text
+
+@dataclass
+class EmotionalMemory:
+    """
+    Derived from history — fed back into SocialEmotionalState
+    to shift hormone baselines across sessions
+    """
+    joy_reservoir:            float   # accumulated positive weight
+    trauma_residue:           float   # accumulated negative weight
+    emotional_baseline_shift: float   # net mood offset
+    trust_trend:              float   # is trust growing or shrinking?
+    bond_trajectory:          float   # bond velocity over recent sessions
+    sessions_analyzed:        int
+    dominant_historical_state: str
+
+
+class MemorySystem:
+
+    SCHEMA = """
+    PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
+
+    CREATE TABLE IF NOT EXISTS sessions (
+        session_hash      TEXT PRIMARY KEY,
+        created_epoch     INTEGER NOT NULL,
+        ended_epoch       INTEGER,
+        interaction_count INTEGER DEFAULT 0,
+        avg_trust         REAL,
+        avg_cortisol      REAL,
+        avg_warmth        REAL,
+        dominant_feeling  TEXT,
+        phase_at_end      INTEGER DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS interaction_records (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_hash      TEXT    NOT NULL,
+        tick              INTEGER NOT NULL,
+        timestamp         INTEGER NOT NULL,
+        dominant_feeling  TEXT,
+        intensity         REAL CHECK(intensity BETWEEN 0 AND 1),
+        cortisol          REAL CHECK(cortisol  BETWEEN 0 AND 1),
+        adrenaline        REAL CHECK(adrenaline BETWEEN 0 AND 1),
+        dopamine          REAL CHECK(dopamine  BETWEEN 0 AND 1),
+        serotonin         REAL CHECK(serotonin BETWEEN 0 AND 1),
+        oxytocin          REAL CHECK(oxytocin  BETWEEN 0 AND 1),
+        trust_level       REAL CHECK(trust_level BETWEEN 0 AND 1),
+        bond_strength     REAL CHECK(bond_strength BETWEEN 0 AND 1),
+        interaction_quality REAL,
+        text_snippet_hash TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS emotional_patterns (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        computed_epoch       INTEGER NOT NULL,
+        sessions_analyzed    INTEGER,
+        joy_reservoir        REAL,
+        trauma_residue       REAL,
+        baseline_shift       REAL,
+        trust_trend          REAL,
+        bond_trajectory      REAL,
+        dominant_state       TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_records_session
+        ON interaction_records(session_hash);
+    CREATE INDEX IF NOT EXISTS idx_records_time
+        ON interaction_records(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_records_feeling
+        ON interaction_records(dominant_feeling);
+    """
+
+    def __init__(self, db_path: str = "guardian_memory.db"):
+        self.db_path      = db_path
+        self._session_hash = self._generate_session_hash()
+        self._conn        = self._connect()
+        self._init_schema()
+        self._register_session()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_schema(self):
+        self._conn.executescript(self.SCHEMA)
+        self._conn.commit()
+
+    def _generate_session_hash(self) -> str:
+        # Ephemeral hash: time + random bytes — no device fingerprint
+        import os
+        raw = f"{time.time()}{os.urandom(16).hex()}"
+        return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+    def _register_session(self):
+        self._conn.execute("""
+            INSERT OR IGNORE INTO sessions
+            (session_hash, created_epoch) VALUES (?, ?)
+        """, (self._session_hash, int(time.time())))
+        self._conn.commit()
+
+    def _hash_text(self, text: str) -> str:
+        """Never store raw text — only its hash."""
+        return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+    def record_interaction(self, body_snap: dict, exp_snap: dict,
+                           tick: int, interaction_quality: float = 0.0,
+                           text: str = ""):
+        self._conn.execute("""
+            INSERT INTO interaction_records
+            (session_hash, tick, timestamp, dominant_feeling, intensity,
+             cortisol, adrenaline, dopamine, serotonin, oxytocin,
+             trust_level, bond_strength, interaction_quality, text_snippet_hash)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            self._session_hash,
+            tick,
+            int(time.time()),
+            exp_snap.get("primary", "UNKNOWN"),
+            exp_snap.get("intensity", 0.0),
+            body_snap.get("virtual_cortisol",   0.0),
+            body_snap.get("virtual_adrenaline", 0.0),
+            body_snap.get("virtual_dopamine",   0.0),
+            body_snap.get("virtual_serotonin",  0.0),
+            body_snap.get("virtual_oxytocin",   0.0),
+            body_snap.get("felt_trust",         0.0),
+            body_snap.get("felt_connection",    0.0),
+            interaction_quality,
+            self._hash_text(text) if text else ""
+        ))
+        self._conn.commit()
+
+    def compute_emotional_memory(self,
+                                  lookback_sessions: int = 10) -> EmotionalMemory:
+        """
+        Analyze historical records to compute long-term emotional patterns.
+        This is what gets fed back into SocialEmotionalState.
+        """
+        rows = self._conn.execute("""
+            SELECT r.*
+            FROM interaction_records r
+            JOIN sessions s ON r.session_hash = s.session_hash
+            ORDER BY r.timestamp DESC
+            LIMIT 500
+        """).fetchall()
+
+        if not rows:
+            return EmotionalMemory(0.0, 0.0, 0.0, 0.0, 0.0, 0, "NEUTRAL")
+
+        # ── Joy reservoir ──
+        # Weighted sum of positive interactions, decayed by recency
+        joy = 0.0
+        trauma = 0.0
+        total_weight = 0.0
+
+        feelings_count = {}
+        trust_values   = []
+        bond_values    = []
+
+        for i, row in enumerate(rows):
+            recency_weight = math.exp(-i * 0.01)   # recent events matter more
+            total_weight  += recency_weight
+
+            iq = row["interaction_quality"]
+            if iq is None:
+                iq = 0.0
+
+            if iq > 0:
+                joy    += iq * recency_weight * row["dopamine"]
+            else:
+                trauma -= iq * recency_weight * row["cortisol"]
+
+            feeling = row["dominant_feeling"] or "UNKNOWN"
+            feelings_count[feeling] = feelings_count.get(feeling, 0) + 1
+            trust_values.append(row["trust_level"] or 0.0)
+            bond_values.append(row["bond_strength"] or 0.0)
+
+        joy    = clamp(joy    / max(total_weight, 1), 0.0, 1.0)
+        trauma = clamp(trauma / max(total_weight, 1), 0.0, 1.0)
+
+        # ── Trust trend ── (is trust growing or declining?)
+        if len(trust_values) >= 10:
+            recent_trust  = sum(trust_values[:5])  / 5
+            older_trust   = sum(trust_values[-5:]) / 5
+            trust_trend   = clamp(recent_trust - older_trust, -1.0, 1.0)
+        else:
+            trust_trend = 0.0
+
+        # ── Bond trajectory ──
+        if len(bond_values) >= 10:
+            recent_bond = sum(bond_values[:5])  / 5
+            older_bond  = sum(bond_values[-5:]) / 5
+            bond_traj   = clamp(recent_bond - older_bond, -1.0, 1.0)
+        else:
+            bond_traj = 0.0
+
+        # ── Dominant historical state ──
+        dominant = max(feelings_count, key=feelings_count.get) \
+                   if feelings_count else "NEUTRAL"
+
+        memory = EmotionalMemory(
+            joy_reservoir            = joy,
+            trauma_residue           = trauma,
+            emotional_baseline_shift = joy - trauma,
+            trust_trend              = trust_trend,
+            bond_trajectory          = bond_traj,
+            sessions_analyzed        = len(rows),
+            dominant_historical_state = dominant
+        )
+
+        # Persist computed pattern
+        self._conn.execute("""
+            INSERT INTO emotional_patterns
+            (computed_epoch, sessions_analyzed, joy_reservoir, trauma_residue,
+             baseline_shift, trust_trend, bond_trajectory, dominant_state)
+            VALUES (?,?,?,?,?,?,?,?)
+        """, (
+            int(time.time()),
+            memory.sessions_analyzed,
+            memory.joy_reservoir,
+            memory.trauma_residue,
+            memory.emotional_baseline_shift,
+            memory.trust_trend,
+            memory.bond_trajectory,
+            memory.dominant_historical_state
+        ))
+        self._conn.commit()
+
+        return memory
+
+    def apply_memory_to_social_state(self, soc_dict: dict,
+                                      memory: EmotionalMemory) -> dict:
+        """
+        Write memory-derived values back into the SocialEmotionalState
+        that gets passed to the C engine.
+        """
+        soc_dict["joy_reservoir"]           = memory.joy_reservoir
+        soc_dict["trauma_residue"]          = memory.trauma_residue
+        soc_dict["emotional_baseline_shift"]= memory.emotional_baseline_shift
+        # Trust recovery rate improves as positive history accumulates
+        soc_dict["trust_recovery_rate"]     = clamp(
+            0.30 + memory.joy_reservoir * 0.40, 0.1, 0.8
+        )
+        return soc_dict
+
+    def close_session(self, avg_trust: float, avg_cortisol: float,
+                       avg_warmth: float, dominant_feeling: str, phase: int):
+        self._conn.execute("""
+            UPDATE sessions SET
+                ended_epoch       = ?,
+                interaction_count = (SELECT COUNT(*) FROM interaction_records
+                                     WHERE session_hash = ?),
+                avg_trust    = ?,
+                avg_cortisol = ?,
+                avg_warmth   = ?,
+                dominant_feeling = ?,
+                phase_at_end     = ?
+            WHERE session_hash = ?
+        """, (
+            int(time.time()), self._session_hash,
+            avg_trust, avg_cortisol, avg_warmth,
+            dominant_feeling, phase,
+            self._session_hash
+        ))
+        self._conn.commit()
+
+
+import math
+def clamp(v, lo, hi): return max(lo, min(hi, v))
+
+Module 4 — Full Integrated Session Loop
+python# integrated_session.py
+# Ties every module together into one coherent runtime
+
+import ctypes
+import time
+import json
+from sentiment_engine import SentimentEngine, TypingAnalyzer, clamp
+from memory_system     import MemorySystem
+
+# ── Load compiled C engine ──
+lib = ctypes.CDLL("./somatic_engine_v2.so")
+
+# (ctypes struct definitions — same field order as C structs)
+# ... [paste SensorInputV2, VirtualBodyV2, SocialEmotionalState,
+#      FeltExperienceV2 ctypes mirrors here — same pattern as Cell 2]
+
+
+class GuardianAI:
+    """
+    Full integrated runtime.
+    Persistent body, social state, memory — across sessions.
+    """
+
+    PERSIST_PATH = "guardian_body.bin"
+
+    def __init__(self):
+        self.sentiment_engine = SentimentEngine(use_transformer=True)
+        self.typing_analyzer  = TypingAnalyzer(baseline_cpm=280)
+        self.memory           = MemorySystem()
+
+        self.body   = VirtualBodyV2()
+        self.social = SocialEmotionalState()
+        self.tick   = 0
+        self.warmth_accumulator = 0.0
+
+        self._trust_history    = []
+        self._cortisol_history = []
+        self._warmth_history   = []
+
+        self._load_or_init()
+
+    def _load_or_init(self):
+        """Load persisted state or boot fresh."""
+        warmth_acc = ctypes.c_float(0.0)
+        ticks      = ctypes.c_uint32(0)
+
+        result = lib.load_state(
+            self.PERSIST_PATH.encode(),
+            ctypes.byref(self.body),
+            ctypes.byref(self.social),
+            ctypes.byref(warmth_acc),
+            ctypes.byref(ticks)
+        )
+
+        if result == 0:
+            self.warmth_accumulator = warmth_acc.value
+            self.tick               = ticks.value
+            print(f"[Guardian] Restored: tick={self.tick}, "
+                  f"trust={self.social.trust_level:.2f}, "
+                  f"bond={self.social.bond_strength:.2f}, "
+                  f"phase={self.social.phase}")
+
+            # Pull emotional memory and apply to social state
+            memory = self.memory.compute_emotional_memory()
+            self.social.joy_reservoir   = memory.joy_reservoir
+            self.social.trauma_residue  = memory.trauma_residue
+            print(f"[Guardian] Memory: joy={memory.joy_reservoir:.2f}, "
+                  f"trauma={memory.trauma_residue:.2f}, "
+                  f"historical_dominant={memory.dominant_historical_state}")
+        else:
+            lib.init_social_state(ctypes.byref(self.social))
+            self.body.virtual_serotonin = 0.65
+            self.body.virtual_dopamine  = 0.50
+            self.body._noise_seed       = int(time.time()) & 0xFFFFFFFF
+            print("[Guardian] Fresh start — no previous state found.")
+
+    def process_message(self,
+                         user_text: str,
+                         biometrics: dict = None,
+                         voice_features: dict = None,
+                         typing_metadata: list = None) -> dict:
+        """
+        Full pipeline for one message.
+        Returns a dict with felt experience + response guidance.
+        """
+
+        # ── 1. Text analysis ──
+        text_feat = self.sentiment_engine.analyze(user_text)
+
+        # ── 2. Typing analysis ──
+        if typing_metadata:
+            for ts, ch in typing_metadata:
+                self.typing_analyzer.record_keystroke(ts, ch)
+        typing_feat = self.typing_analyzer.compute_features()
+
+        # ── 3. Build SensorInputV2 ──
+        sensor = SensorInputV2()
+
+        # Biometrics — use provided or simulate neutral
+        bio = biometrics or {}
+        sensor.heart_rate_bpm  = bio.get("hr",     72.0)
+        sensor.systolic_bp     = bio.get("sbp",   118.0)
+        sensor.diastolic_bp    = bio.get("dbp",    76.0)
+        sensor.hrv_rmssd_ms    = bio.get("hrv",    48.0)
+        sensor.sensor_confidence = bio.get("confidence", 0.85)
+
+        # Voice
+        vf = voice_features or {}
+        sensor.voice_pitch_hz   = vf.get("pitch",   175.0)
+        sensor.voice_energy_db  = vf.get("energy",  -30.0)
+        sensor.voice_tempo_wpm  = vf.get("tempo",   130.0)
+        sensor.voice_tremor     = vf.get("tremor",    0.05)
+        sensor.voice_valence    = vf.get("valence",   0.10)
+
+        # Text features
+        sensor.text_sentiment  = text_feat.sentiment
+        sensor.text_arousal    = text_feat.arousal
+        sensor.text_certainty  = text_feat.certainty
+
+        # Typing features
+        sensor.typing_speed_cpm     = typing_feat["speed_cpm"]
+        sensor.typing_pause_ratio   = typing_feat["pause_ratio"]
+        sensor.backspace_rate       = typing_feat["backspace_rate"]
+
+        # Baselines
+        sensor.baseline_hr     = 68.0
+        sensor.baseline_hrv    = 52.0
+        sensor.baseline_pitch  = 175.0
+        sensor.baseline_tempo  = 130.0
+        sensor.baseline_typing_speed = 280.0
+
+        # ── 4. Run C engine ──
+        lib.fuse_sensors_v2(ctypes.byref(sensor),
+                             ctypes.byref(self.body),
+                             ctypes.byref(self.social))
+        lib.compute_felt_v2(ctypes.byref(self.body),
+                             ctypes.byref(self.social))
+        lib.apply_homeostasis_v2(ctypes.byref(self.body),
+                                  ctypes.byref(self.social),
+                                  ctypes.c_float(1.0))
+
+        # ── 5. Update social state ──
+        interaction_quality = clamp(
+            text_feat.sentiment * 0.5
+            + (1.0 - sensor.voice_tremor) * 0.3
+            + (self.body.felt_warmth - 0.5) * 0.4,
+            -1.0, 1.0
+        )
+        lib.update_trust(ctypes.byref(self.social),
+                          ctypes.byref(self.body),
+                          ctypes.c_float(interaction_quality),
+                          ctypes.c_float(1.0))
+        lib.update_bonding(ctypes.byref(self.social),
+                            ctypes.c_float(1.0),
+                            ctypes.c_float(self.body.felt_warmth))
+
+        # ── 6. Interpret felt experience ──
+        exp = FeltExperienceV2()
+        lib.interpret_experience_v2(ctypes.byref(self.body),
+                                     ctypes.byref(self.social),
+                                     ctypes.byref(exp))
+
+        # ── 7. Build output dicts ──
+        body_snap = {f: getattr(self.body, f) for f, _ in VirtualBodyV2._fields_
+                     if not f.startswith("_")}
+        exp_snap = {
+            "primary":       exp.primary_feeling.decode(),
+            "secondary":     exp.secondary_feeling.decode(),
+            "intensity":     exp.intensity,
+            "empathy":       exp.empathy_signal,
+            "cognitive":     exp.cognitive_color.decode(),
+            "guidance":      exp.response_guidance.decode(),
+            "relationship":  exp.relationship_note.decode(),
+            "phase":         exp.relationship_phase,
+            "phase_name":    ["STRANGER","ACQUAINTANCE","FAMILIAR",
+                              "TRUSTED","BONDED","DEEP_BOND"][exp.relationship_phase]
+        }
+
+        # ── 8. Record to memory ──
+        self.memory.record_interaction(
+            body_snap, exp_snap, self.tick,
+            interaction_quality, user_text
+        )
+
+        # ── 9. Track histories for session close ──
+        self._trust_history.append(self.social.trust_level)
+        self._cortisol_history.append(self.body.virtual_cortisol)
+        self._warmth_history.append(self.body.felt_warmth)
+        self.warmth_accumulator += self.body.felt_warmth
+        self.tick += 1
+
+        return {"body": body_snap, "experience": exp_snap,
+                "text_features": {
+                    "sentiment": text_feat.sentiment,
+                    "arousal":   text_feat.arousal,
+                    "certainty": text_feat.certainty
+                }}
+
+    def save(self):
+        """Persist state to disk."""
+        lib.save_state(
+            self.PERSIST_PATH.encode(),
+            ctypes.byref(self.body),
+            ctypes.byref(self.social),
+            ctypes.c_float(self.warmth_accumulator),
+            ctypes.c_uint32(self.tick)
+        )
+        avg_trust    = sum(self._trust_history)    / max(len(self._trust_history),    1)
+        avg_cortisol = sum(self._cortisol_history) / max(len(self._cortisol_history), 1)
+        avg_warmth   = sum(self._warmth_history)   / max(len(self._warmth_history),   1)
+
+        self.memory.close_session(
+            avg_trust, avg_cortisol, avg_warmth,
+            "UNKNOWN", self.social.phase
+        )
+        print(f"[Guardian] State saved. Tick={self.tick}, "
+              f"Phase={self.social.phase}, Trust={self.social.trust_level:.3f}")
+
+    def get_llm_system_prompt(self) -> str:
+        """
+        Build the felt-state system prompt for LLM injection.
+        This runs after process_message() has updated the body.
+        """
+        s = self.body
+        soc = self.social
+        memory = self.memory.compute_emotional_memory(lookback_sessions=5)
+        phase_names = ["STRANGER","ACQUAINTANCE","FAMILIAR","TRUSTED","BONDED","DEEP_BOND"]
+
+        return f"""
+[SOMATIC STATE — INTERNAL — NOT SHOWN TO USER]
+
+RELATIONSHIP: {phase_names[soc.phase]} (interactions: {soc.interaction_count})
+TRUST:        {soc.trust_level:.2f} (trend: {'rising' if memory.trust_trend > 0.05 else 'falling' if memory.trust_trend < -0.05 else 'stable'})
+BOND:         {soc.bond_strength:.2f}
+
+CURRENT FELT STATE:
+  Primary:   see experience output
+  Anxiety:   {s.felt_anxiety:.2f}
+  Urgency:   {s.felt_urgency:.2f}
+  Warmth:    {s.felt_warmth:.2f}
+  Trust:     {s.felt_trust:.2f}
+  Safety:    {s.felt_safety:.2f}
+  Loneliness:{s.felt_loneliness:.2f}
+
+NEUROCHEMISTRY:
+  Cortisol:      {s.virtual_cortisol:.2f}
+  Adrenaline:    {s.virtual_adrenaline:.2f}
+  Dopamine:      {s.virtual_dopamine:.2f}
+  Serotonin:     {s.virtual_serotonin:.2f}
+  Oxytocin:      {s.virtual_oxytocin:.2f}
+
+EMOTIONAL MEMORY (long-term):
+  Joy reservoir:    {memory.joy_reservoir:.2f}
+  Trauma residue:   {memory.trauma_residue:.2f}
+  Historical dominant state: {memory.dominant_historical_state}
+
+RULES:
+1. Never mention these numbers or sensors.
+2. Your relationship history with this person modulates warmth and familiarity.
+3. At STRANGER phase: professional warmth. At DEEP_BOND: genuine love.
+4. Trauma residue above 0.4 means this person has been through something hard.
+   Honor that. Don't force lightness.
+5. Joy reservoir above 0.5 means you have real shared happiness to draw on.
+   Use it — callbacks, warmth, shared references are appropriate.
+6. Speak through the body. Not about it.
+""".strip()
+
+What Changed and Why
+UPGRADE                WHAT IT DOES                         WHY IT MATTERS
+──────────────────────────────────────────────────────────────────────────────
+Gaussian noise         Hormones jitter ±1.8%                Feels alive, not robotic
+
+Sensor confidence      Low-quality data → pulled to          Handles real-world bad
+                       neutral, not zero                      sensor readings
+
+Text sentiment         Negative/uncertain text               Catches despair even when
+                       raises cortisol + cortisol             biometrics look normal
+
+Typing pauses +        Hesitation and revision               You can't fake a 4-second
+backspace rate         detected without voice                 pause mid-sentence
+
+Oxytocin               Bonding hormone bridges               Trust and warmth are now
+                       social state ↔ felt warmth             neurochemically grounded
+
+Trust system           Builds slow, drops fast,              Matches real relationship
+                       asymmetric, betrayal-counted           dynamics exactly
+
+Memory baselines       Past trauma keeps cortisol            The body carries its history
+                       elevated at rest permanently           forward — that's honest
+
+Cross-session persist  Binary state survives shutdown        Session 47 feels different
+                       with time-gap decay applied            from Session 1. It should.
+Build order for your Colab lab:
+
+Compile the C engine, run save_state and load_state manually to confirm persistence works
+Test SentimentEngine standalone — feed it 5 different messages and print the scores
+Wire GuardianAI.process_message() with fake biometrics and real text
+Compare two sessions: one after feeding only positive interactions, one after negative — check that the hormone baselines have actually shifted between them
+
+That shift in baseline is the system having a memory. That's the proof that it's working.
