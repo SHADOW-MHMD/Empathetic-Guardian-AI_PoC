@@ -1,39 +1,19 @@
 import os
 import ctypes
+import time
 from ctypes import Structure, c_float, c_int, c_uint32, POINTER, byref
 from human_sim import SyntheticHuman
+from dotenv import load_dotenv
+
+# Force load .env at the very top
+load_dotenv()
 
 try:
-    from dotenv import load_dotenv
-except ImportError:
-    load_dotenv = None
-
-if load_dotenv is not None:
-    load_dotenv()
-else:
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as env_file:
-            for line in env_file:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    value = value.strip()
-                    # Strip surrounding quotes if present
-                    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-                        value = value[1:-1]
-                    os.environ.setdefault(key.strip(), value)
-
-try:
-    import google.generativeai as genai
+    from google import genai
 except ImportError as exc:
     raise ImportError(
-        "google.generativeai is required. install with: pip install google-generativeai"
+        "google-genai is required. install with: pip install google-genai"
     ) from exc
-
-GEMINI_MODEL = "gemini-2.0-flash"
 
 class SensorInputV2(Structure):
     _fields_ = [
@@ -117,26 +97,43 @@ def load_library():
     return lib
 
 
-def configure_gemini():
+def ask_gemini(prompt: str) -> str:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is missing from the environment. Add it to a .env file.")
-    genai.configure(api_key=api_key)
-    return api_key
+        return "[Gemini call failed: GEMINI_API_KEY is missing from the environment. Add it to a .env file.]"
 
+    print(f"Using API Key: {api_key[:5]}***")
+    client = genai.Client(api_key=api_key)
 
-def ask_gemini(prompt: str) -> str:
-    try:
-        configure_gemini()
-        model = genai.GenerativeModel(model_name=GEMINI_MODEL)
-        response = model.generate_content(prompt)
-        if hasattr(response, "text") and response.text:
-            return response.text
-        if hasattr(response, "output") and response.output:
-            return response.output
-        return str(response)
-    except Exception as exc:
-        return f"[Gemini call failed: {exc}]"
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=prompt
+            )
+
+            if hasattr(response, "text") and response.text:
+                return response.text
+            if hasattr(response, "output") and response.output:
+                return response.output
+            return str(response)
+
+        except Exception as exc:
+            error_str = str(exc)
+            if "429" in error_str or "quota" in error_str.lower() or "exhausted" in error_str.lower():
+                if attempt < max_retries - 1:
+                    wait_time = 30
+                    print(f"API Quota exceeded. Waiting for API quota to reset ({wait_time}s)...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    return f"[Gemini call failed after {max_retries} attempts: {exc}]"
+            else:
+                # Non-quota error, don't retry
+                return f"[Gemini call failed: {exc}]"
+
+    return "[Gemini call failed: Max retries exceeded]"
 
 
 def build_sensor_input(state: dict, scenario: str) -> SensorInputV2:
@@ -225,9 +222,9 @@ def run_simulation(scenario_name: str, lib):
 
 
 def main():
-    configure_gemini()
     lib = load_library()
     run_simulation("calm", lib)
+    time.sleep(15)
     run_simulation("panic", lib)
 
 
