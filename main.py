@@ -1,6 +1,8 @@
 import os
 import ctypes
 import time
+import csv
+from datetime import datetime
 from ctypes import Structure, c_float, c_int, c_uint32, POINTER, byref
 from human_sim import SyntheticHuman
 from dotenv import load_dotenv
@@ -9,11 +11,37 @@ from dotenv import load_dotenv
 load_dotenv()
 
 try:
-    from google import genai
+    from colorama import init, Fore, Style
+    init(autoreset=True)  # Initialize colorama
 except ImportError as exc:
     raise ImportError(
-        "google-genai is required. install with: pip install google-genai"
+        "colorama is required. install with: pip install colorama"
     ) from exc
+
+try:
+    from openai import OpenAI
+except ImportError as exc:
+    raise ImportError(
+        "openai is required. install with: pip install openai"
+    ) from exc
+
+# Color mapping for scenarios
+color_map = {
+    "calm": Fore.CYAN,
+    "panic": Fore.RED,
+    "anxious": Fore.YELLOW,
+    "scared": Fore.RED,
+    "crying": Fore.GREEN,
+    "heavy_hearted": Fore.GREEN
+}
+
+def log_somatic_data(timestamp, scenario, cortisol, adrenaline, anxiety, response_preview):
+    file_exists = os.path.isfile('somatic_logs.csv')
+    with open('somatic_logs.csv', 'a', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        if not file_exists:
+            writer.writerow(['Timestamp', 'Scenario', 'Cortisol', 'Adrenaline', 'Anxiety_Level', 'AI_Response_Preview'])
+        writer.writerow([timestamp, scenario, cortisol, adrenaline, anxiety, response_preview])
 
 class SensorInputV2(Structure):
     _fields_ = [
@@ -63,6 +91,8 @@ class VirtualBodyV2(Structure):
         ("felt_connection", c_float),
         ("felt_loneliness", c_float),
         ("felt_safety", c_float),
+        ("felt_tension", c_float),
+        ("felt_energy", c_float),
         ("confidence", c_float),
         ("noise_seed_float", c_float),
         ("_noise_seed", c_uint32),
@@ -97,43 +127,74 @@ def load_library():
     return lib
 
 
-def ask_gemini(prompt: str) -> str:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        return "[Gemini call failed: GEMINI_API_KEY is missing from the environment. Add it to a .env file.]"
+def somatic_mirror_response(cortisol: float, adrenaline: float, text: str) -> str:
+    """
+    Fallback responder that generates empathetic responses based on C-Engine hormone levels.
+    Demonstrates somatic mirroring when Gemini API is unavailable.
+    """
+    if cortisol > 0.1:
+        # HIGH STRESS mode
+        return (
+            "[SOMATIC STATE: HIGH STRESS] I can feel your heart racing through the C-Engine. "
+            "I'm shifting to grounding mode. Focus on my words: Breathe in for 4 seconds, "
+            "hold for 4, exhale for 4. Your nervous system is activated. Let's bring it back to center. "
+            "Tell me: what's the ONE thing you can control right now?"
+        )
+    else:
+        # STABLE/CALM mode
+        return (
+            "[SOMATIC STATE: STABLE] My sensors show you are calm. I'm here to listen. "
+            "Tell me more about what you shared. I'm tracking your emotional baseline—everything seems grounded. "
+            "What feels most important for you to explore right now?"
+        )
 
-    print(f"Using API Key: {api_key[:5]}***")
-    client = genai.Client(api_key=api_key)
 
-    max_retries = 3
-    for attempt in range(max_retries):
+def call_grok(prompt: str, cortisol: float = 0.0, adrenaline: float = 0.0, user_text: str = "") -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key or api_key == "your_openrouter_key_here":
+        return "[Grok call failed: OPENROUTER_API_KEY is missing or not configured. Add it to a .env file.]"
+
+    print(f"Using OpenRouter API Key: {api_key[:5]}***")
+    
+    # Initialize OpenAI client configured for OpenRouter
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={
+            "HTTP-Referer": "http://localhost:3000",
+            "X-Title": "Empathetic Guardian PoC"
+        }
+    )
+
+    # Try primary model first, then fallback to secondary
+    models_to_try = [
+        "openai/gpt-oss-120b:free",  # Primary
+        "meta-llama/llama-3.3-70b-instruct:free"  # Fallback
+    ]
+
+    for model_name in models_to_try:
         try:
-            response = client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=prompt
+            print(f"Trying model: {model_name}...", end=" ")
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}]
             )
 
-            if hasattr(response, "text") and response.text:
-                return response.text
-            if hasattr(response, "output") and response.output:
-                return response.output
+            if response.choices and response.choices[0].message.content:
+                print("✓ Success")
+                return response.choices[0].message.content
+
             return str(response)
 
         except Exception as exc:
             error_str = str(exc)
-            if "429" in error_str or "quota" in error_str.lower() or "exhausted" in error_str.lower():
-                if attempt < max_retries - 1:
-                    wait_time = 30
-                    print(f"API Quota exceeded. Waiting for API quota to reset ({wait_time}s)...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    return f"[Gemini call failed after {max_retries} attempts: {exc}]"
-            else:
-                # Non-quota error, don't retry
-                return f"[Gemini call failed: {exc}]"
-
-    return "[Gemini call failed: Max retries exceeded]"
+            print(f"✗ Failed")
+            # If this isn't the last model, continue to next
+            if model_name == models_to_try[-1]:
+                # Last model failed - fall back to somatic mirroring
+                print(f"[API Error: {error_str[:100]}... Falling back to Somatic Mirroring]")
+                return somatic_mirror_response(cortisol, adrenaline, user_text)
+            # Otherwise continue to next model in the loop
 
 
 def build_sensor_input(state: dict, scenario: str) -> SensorInputV2:
@@ -185,20 +246,132 @@ def build_sensor_input(state: dict, scenario: str) -> SensorInputV2:
             baseline_tempo=105.0,
             baseline_typing_speed=220.0,
         )
+    if scenario == "anxious":
+        return SensorInputV2(
+            heart_rate_bpm=state["hr"],
+            systolic_bp=125.0,
+            diastolic_bp=80.0,
+            hrv_rmssd_ms=state["hrv"],
+            voice_pitch_hz=185.0,
+            voice_energy_db=-5.0,
+            voice_tempo_wpm=120.0,
+            voice_tremor=state["voice_tremor"],
+            voice_valence=-0.1,
+            text_sentiment=state["sentiment"],
+            text_arousal=0.5,
+            text_certainty=0.6,
+            typing_speed_cpm=200.0,
+            typing_pause_ratio=0.2,
+            backspace_rate=8.0,
+            sensor_confidence=0.9,
+            baseline_hr=70.0,
+            baseline_hrv=60.0,
+            baseline_pitch=165.0,
+            baseline_tempo=105.0,
+            baseline_typing_speed=220.0,
+        )
+    if scenario == "scared":
+        return SensorInputV2(
+            heart_rate_bpm=state["hr"],
+            systolic_bp=145.0,
+            diastolic_bp=90.0,
+            hrv_rmssd_ms=state["hrv"],
+            voice_pitch_hz=210.0,
+            voice_energy_db=8.0,
+            voice_tempo_wpm=160.0,
+            voice_tremor=state["voice_tremor"],
+            voice_valence=-0.6,
+            text_sentiment=state["sentiment"],
+            text_arousal=0.8,
+            text_certainty=0.4,
+            typing_speed_cpm=190.0,
+            typing_pause_ratio=0.35,
+            backspace_rate=12.0,
+            sensor_confidence=0.88,
+            baseline_hr=70.0,
+            baseline_hrv=60.0,
+            baseline_pitch=165.0,
+            baseline_tempo=105.0,
+            baseline_typing_speed=220.0,
+        )
+    if scenario == "crying":
+        return SensorInputV2(
+            heart_rate_bpm=state["hr"],
+            systolic_bp=115.0,
+            diastolic_bp=75.0,
+            hrv_rmssd_ms=state["hrv"],
+            voice_pitch_hz=175.0,
+            voice_energy_db=-8.0,
+            voice_tempo_wpm=110.0,
+            voice_tremor=state["voice_tremor"],
+            voice_valence=-0.7,
+            text_sentiment=state["sentiment"],
+            text_arousal=0.6,
+            text_certainty=0.5,
+            typing_speed_cpm=180.0,
+            typing_pause_ratio=0.25,
+            backspace_rate=6.0,
+            sensor_confidence=0.92,
+            baseline_hr=70.0,
+            baseline_hrv=60.0,
+            baseline_pitch=165.0,
+            baseline_tempo=105.0,
+            baseline_typing_speed=220.0,
+        )
+    if scenario == "heavy_hearted":
+        return SensorInputV2(
+            heart_rate_bpm=state["hr"],
+            systolic_bp=105.0,
+            diastolic_bp=68.0,
+            hrv_rmssd_ms=state["hrv"],
+            voice_pitch_hz=160.0,
+            voice_energy_db=-15.0,
+            voice_tempo_wpm=95.0,
+            voice_tremor=state["voice_tremor"],
+            voice_valence=-0.4,
+            text_sentiment=state["sentiment"],
+            text_arousal=0.2,
+            text_certainty=0.7,
+            typing_speed_cpm=150.0,
+            typing_pause_ratio=0.15,
+            backspace_rate=4.0,
+            sensor_confidence=0.95,
+            baseline_hr=70.0,
+            baseline_hrv=60.0,
+            baseline_pitch=165.0,
+            baseline_tempo=105.0,
+            baseline_typing_speed=220.0,
+        )
     raise ValueError(f"Unsupported scenario: {scenario}")
 
 
-def build_system_prompt(cortisol: float, adrenaline: float, anxiety: float, text: str) -> str:
+def build_system_prompt(scenario: str, cortisol: float, adrenaline: float, anxiety: float, tension: float, energy: float, text: str) -> str:
+    status_descriptions = {
+        "calm": "User Status: [Calm]. Adrenaline: Low. Energy: Moderate.",
+        "panic": "User Status: [Panic]. Adrenaline: High. Energy: High.",
+        "anxious": "User Status: [Anxious]. Adrenaline: Low. Tension: High.",
+        "scared": "User Status: [Scared]. Adrenaline: High. Heart Rate: High.",
+        "crying": "User Status: [Crying]. Adrenaline: Low. Oxytocin: High (distress-driven).",
+        "heavy_hearted": "User Status: [Heavy Hearted]. Adrenaline: Low. Energy: Low."
+    }
+    status = status_descriptions.get(scenario, f"User Status: [{scenario}].")
+    
     return (
         f"You are an Empathetic Guardian AI. You have a simulated biological body. "
-        f"Right now, your internal Cortisol is {cortisol:.2f}, your Adrenaline is {adrenaline:.2f}, "
-        f"and your Felt Anxiety is {anxiety:.2f}. The user says: '{text}'. "
-        "Modulate your response tone, length, and warmth based strictly on your internal hormones. "
+        f"{status} "
+        f"Your internal Cortisol is {cortisol:.2f}, Adrenaline is {adrenaline:.2f}, "
+        f"Felt Anxiety is {anxiety:.2f}, Felt Tension is {tension:.2f}, Felt Energy is {energy:.2f}. "
+        f"The user says: '{text}'. "
+        "Modulate your response tone, length, and warmth based strictly on your internal hormones and user status. "
+        "For Heavy Hearted: be silent/gentle. For Scared: be alert/protective. For Anxious: be patient/grounding. "
         "Do not explicitly mention your hormone levels to the user, just act accordingly."
     )
 
 
 def run_simulation(scenario_name: str, lib):
+    # Separator line
+    print("\n" + "="*80)
+    
     human = SyntheticHuman()
     state = human.get_state(scenario_name)
     sensor = build_sensor_input(state, scenario_name)
@@ -211,21 +384,33 @@ def run_simulation(scenario_name: str, lib):
     cortisol = float(body.virtual_cortisol)
     adrenaline = float(body.virtual_adrenaline)
     anxiety = float(body.felt_anxiety)
-    prompt = build_system_prompt(cortisol, adrenaline, anxiety, state["text"])
-    response = ask_gemini(prompt)
+    tension = float(body.felt_tension)
+    energy = float(body.felt_energy)
+    prompt = build_system_prompt(scenario_name, cortisol, adrenaline, anxiety, tension, energy, state["text"])
+    response = call_grok(prompt, cortisol=cortisol, adrenaline=adrenaline, user_text=state["text"])
 
-    print("\n=== Scenario: {} ===".format(scenario_name))
-    print(f"C-Engine -> Cortisol: {cortisol:.3f}, Adrenaline: {adrenaline:.3f}, Felt Anxiety: {anxiety:.3f}")
-    print("User text:", state["text"])
-    print("--- Gemini response ---")
-    print(response)
+    # Get color for scenario
+    color = color_map.get(scenario_name, Fore.WHITE)
+    
+    print(f"{color}=== Scenario: {scenario_name.upper()} ===")
+    print(f"{color}C-Engine -> Cortisol: {cortisol:.3f}, Adrenaline: {adrenaline:.3f}, Felt Anxiety: {anxiety:.3f}")
+    print(f"{color}Felt Tension: {tension:.3f}, Felt Energy: {energy:.3f}")
+    print(f"{color}User text: {state['text']}")
+    print(f"{color}--- Grok response ---")
+    print(f"{color}{response}")
+
+    # Log to CSV
+    timestamp = datetime.now().isoformat()
+    response_preview = response[:50] if response else ""
+    log_somatic_data(timestamp, scenario_name, f"{cortisol:.3f}", f"{adrenaline:.3f}", f"{anxiety:.3f}", response_preview)
 
 
 def main():
     lib = load_library()
-    run_simulation("calm", lib)
-    time.sleep(15)
-    run_simulation("panic", lib)
+    scenarios = ["calm", "panic", "anxious", "scared", "crying", "heavy_hearted"]
+    for scenario in scenarios:
+        run_simulation(scenario, lib)
+        time.sleep(15)
 
 
 if __name__ == "__main__":

@@ -98,6 +98,8 @@ typedef struct {
     float felt_connection;
     float felt_loneliness;
     float felt_safety;
+    float felt_tension;
+    float felt_energy;
     float confidence;
     float noise_seed_float;
     uint32_t _noise_seed;
@@ -346,6 +348,18 @@ void compute_felt_v2(VirtualBodyV2 *body,
       - 0.15f * body->virtual_adrenaline
       - 0.20f * body->virtual_cortisol
       + 0.20f,
+        0,1);
+
+    body->felt_tension = clamp_f(
+        0.50f * body->virtual_muscle_tension
+      + 0.30f * body->felt_anxiety
+      + 0.20f * body->virtual_adrenaline,
+        0,1);
+
+    body->felt_energy = clamp_f(
+        0.40f * body->virtual_dopamine
+      + 0.35f * body->virtual_serotonin
+      + 0.25f * (1.0f - body->felt_exhaustion),
         0,1);
 
     float inertia = soc->emotional_inertia * soc->bond_strength;
