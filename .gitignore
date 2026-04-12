@@ -76,9 +76,7 @@ wheels/
 .venv/
 *.bak
 *.tmp
-session_report.md
 somatic_logs.csv
-poc_performance_graph.png
 Mkfile.old
 dkms.conf
 
