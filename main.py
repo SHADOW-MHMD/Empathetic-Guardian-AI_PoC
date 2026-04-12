@@ -130,7 +130,7 @@ def load_library():
 def somatic_mirror_response(cortisol: float, adrenaline: float, text: str) -> str:
     """
     Fallback responder that generates empathetic responses based on C-Engine hormone levels.
-    Demonstrates somatic mirroring when Gemini API is unavailable.
+    Demonstrates somatic mirroring when OpenRouter API is unavailable.
     """
     if cortisol > 0.1:
         # HIGH STRESS mode
@@ -149,12 +149,15 @@ def somatic_mirror_response(cortisol: float, adrenaline: float, text: str) -> st
         )
 
 
-def call_grok(prompt: str, cortisol: float = 0.0, adrenaline: float = 0.0, user_text: str = "") -> str:
+# Global session data for report generation
+session_data = []
+
+def call_empathetic_agent(system_prompt: str, user_text: str, cortisol: float = 0.0, adrenaline: float = 0.0) -> tuple[str, float]:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key or api_key == "your_openrouter_key_here":
-        return "[Grok call failed: OPENROUTER_API_KEY is missing or not configured. Add it to a .env file.]"
+        return "[GPT-OSS call failed: OPENROUTER_API_KEY is missing or not configured. Add it to a .env file.]", 0.0
 
-    print(f"Using OpenRouter API Key: {api_key[:5]}***")
+    print(f"Using Empathetic Agent API Key: {api_key[:5]}***")
     
     # Initialize OpenAI client configured for OpenRouter
     client = OpenAI(
@@ -166,35 +169,34 @@ def call_grok(prompt: str, cortisol: float = 0.0, adrenaline: float = 0.0, user_
         }
     )
 
-    # Try primary model first, then fallback to secondary
-    models_to_try = [
-        "openai/gpt-oss-120b:free",  # Primary
-        "meta-llama/llama-3.3-70b-instruct:free"  # Fallback
-    ]
+    # Use the primary GPT-OSS model
+    model_name = "openai/gpt-oss-120b:free"
 
-    for model_name in models_to_try:
-        try:
-            print(f"Trying model: {model_name}...", end=" ")
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}]
-            )
+    try:
+        print(f"Calling Empathetic Agent with model: {model_name}...", end=" ")
+        start_time = time.time()
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text}
+            ]
+        )
+        end_time = time.time()
+        duration = end_time - start_time
 
-            if response.choices and response.choices[0].message.content:
-                print("✓ Success")
-                return response.choices[0].message.content
+        if response.choices and response.choices[0].message.content:
+            print(f"✓ Success ({duration:.1f}s)")
+            return response.choices[0].message.content, duration
 
-            return str(response)
+        return str(response), duration
 
-        except Exception as exc:
-            error_str = str(exc)
-            print(f"✗ Failed")
-            # If this isn't the last model, continue to next
-            if model_name == models_to_try[-1]:
-                # Last model failed - fall back to somatic mirroring
-                print(f"[API Error: {error_str[:100]}... Falling back to Somatic Mirroring]")
-                return somatic_mirror_response(cortisol, adrenaline, user_text)
-            # Otherwise continue to next model in the loop
+    except Exception as exc:
+        error_str = str(exc)
+        print(f"✗ Failed")
+        # Fall back to somatic mirroring
+        print(f"[API Error: {error_str[:100]}... Falling back to Somatic Mirroring]")
+        return somatic_mirror_response(cortisol, adrenaline, user_text), 0.0
 
 
 def build_sensor_input(state: dict, scenario: str) -> SensorInputV2:
@@ -345,7 +347,7 @@ def build_sensor_input(state: dict, scenario: str) -> SensorInputV2:
     raise ValueError(f"Unsupported scenario: {scenario}")
 
 
-def build_system_prompt(scenario: str, cortisol: float, adrenaline: float, anxiety: float, tension: float, energy: float, text: str) -> str:
+def build_system_prompt(scenario: str, cortisol: float, adrenaline: float, anxiety: float, tension: float, energy: float) -> str:
     status_descriptions = {
         "calm": "User Status: [Calm]. Adrenaline: Low. Energy: Moderate.",
         "panic": "User Status: [Panic]. Adrenaline: High. Energy: High.",
@@ -361,7 +363,6 @@ def build_system_prompt(scenario: str, cortisol: float, adrenaline: float, anxie
         f"{status} "
         f"Your internal Cortisol is {cortisol:.2f}, Adrenaline is {adrenaline:.2f}, "
         f"Felt Anxiety is {anxiety:.2f}, Felt Tension is {tension:.2f}, Felt Energy is {energy:.2f}. "
-        f"The user says: '{text}'. "
         "Modulate your response tone, length, and warmth based strictly on your internal hormones and user status. "
         "For Heavy Hearted: be silent/gentle. For Scared: be alert/protective. For Anxious: be patient/grounding. "
         "Do not explicitly mention your hormone levels to the user, just act accordingly."
@@ -386,23 +387,40 @@ def run_simulation(scenario_name: str, lib):
     anxiety = float(body.felt_anxiety)
     tension = float(body.felt_tension)
     energy = float(body.felt_energy)
-    prompt = build_system_prompt(scenario_name, cortisol, adrenaline, anxiety, tension, energy, state["text"])
-    response = call_grok(prompt, cortisol=cortisol, adrenaline=adrenaline, user_text=state["text"])
+    system_prompt = build_system_prompt(scenario_name, cortisol, adrenaline, anxiety, tension, energy)
+    response, response_time = call_empathetic_agent(system_prompt, state["text"], cortisol=cortisol, adrenaline=adrenaline)
 
     # Get color for scenario
     color = color_map.get(scenario_name, Fore.WHITE)
+    
+    # Modulation Intensity Alert
+    if anxiety > 0.4:
+        print(f"{Fore.RED}[!!!] HIGH EMOTIONAL LOAD DETECTED - ACTIVATING GROUNDING PROTOCOLS")
     
     print(f"{color}=== Scenario: {scenario_name.upper()} ===")
     print(f"{color}C-Engine -> Cortisol: {cortisol:.3f}, Adrenaline: {adrenaline:.3f}, Felt Anxiety: {anxiety:.3f}")
     print(f"{color}Felt Tension: {tension:.3f}, Felt Energy: {energy:.3f}")
     print(f"{color}User text: {state['text']}")
-    print(f"{color}--- Grok response ---")
+    print(f"{color}--- GPT OSS response ---")
     print(f"{color}{response}")
 
     # Log to CSV
     timestamp = datetime.now().isoformat()
     response_preview = response[:50] if response else ""
     log_somatic_data(timestamp, scenario_name, f"{cortisol:.3f}", f"{adrenaline:.3f}", f"{anxiety:.3f}", response_preview)
+
+    # Collect for session report
+    session_data.append({
+        "scenario": scenario_name.upper(),
+        "cortisol": cortisol,
+        "adrenaline": adrenaline,
+        "anxiety": anxiety,
+        "tension": tension,
+        "energy": energy,
+        "user_text": state["text"],
+        "response": response,
+        "response_time": response_time
+    })
 
 
 def main():
@@ -411,6 +429,23 @@ def main():
     for scenario in scenarios:
         run_simulation(scenario, lib)
         time.sleep(15)
+    
+    # Generate session report
+    generate_session_report()
+
+def generate_session_report():
+    with open('session_report.md', 'w') as f:
+        f.write("# Empathetic Guardian AI - Session Report\n\n")
+        f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        for data in session_data:
+            f.write(f"## Scenario: {data['scenario']}\n\n")
+            f.write(f"**Biometrics:** Cortisol: {data['cortisol']:.3f} | Adrenaline: {data['adrenaline']:.3f} | Anxiety: {data['anxiety']:.3f} | Tension: {data['tension']:.3f} | Energy: {data['energy']:.3f}\n\n")
+            f.write(f"**User:** \"{data['user_text']}\"\n\n")
+            f.write(f"**GPT-OSS Response:** ({data['response_time']:.1f}s) {data['response']}\n\n")
+            f.write("---\n\n")
+    
+    print(f"\n📄 Session report generated: session_report.md")
 
 
 if __name__ == "__main__":

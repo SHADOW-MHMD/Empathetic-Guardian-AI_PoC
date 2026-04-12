@@ -48,6 +48,37 @@
 .tmp_versions/
 modules.order
 Module.symvers
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Local and generated files
+.env
+.venv/
+*.bak
+*.tmp
+session_report.md
+somatic_logs.csv
+poc_performance_graph.png
 Mkfile.old
 dkms.conf
 
