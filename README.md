@@ -1,6 +1,3 @@
-This is a solid start, but since you've added automated reporting, visual analytics, and system-level prompt injection, your README should reflect that "professional research" vibe.
-
-Here is a overhauled version that highlights the complexity of what you've actually built.
 🛡️ Empathetic Guardian AI (PoC)
 
 Affective Computing | Somatic Biometrics | Large Language Models
