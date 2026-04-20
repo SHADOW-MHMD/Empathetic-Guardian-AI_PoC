@@ -1,0 +1,73 @@
+{
+  "total_tests": 4,
+  "results": [
+    {
+      "test_case": 1,
+      "input": "my friend just died",
+      "detected_emotion": "grief",
+      "intensity": 0.75,
+      "state": {
+        "cortisol": 0.82,
+        "dopamine": 0.3,
+        "adrenaline": 0.6,
+        "valence": -0.9,
+        "arousal": 0.3,
+        "dominance": 0.2
+      },
+      "response": "I'm so sorry \u2014 losing your friend is devastating. I'm right here with you.",
+      "latency": 3.4395,
+      "response_length": 74
+    },
+    {
+      "test_case": 2,
+      "input": "I am so anxious and scared right now",
+      "detected_emotion": "distress",
+      "intensity": 1.0,
+      "state": {
+        "cortisol": 0.65,
+        "dopamine": 0.3,
+        "adrenaline": 0.7,
+        "valence": -0.7,
+        "arousal": 0.8,
+        "dominance": 0.3
+      },
+      "response": "That sounds really overwhelming, and it makes sense you're feeling this way. I'm right here with you.",
+      "latency": 3.146,
+      "response_length": 101
+    },
+    {
+      "test_case": 3,
+      "input": "what should I do with my career?",
+      "detected_emotion": "none",
+      "intensity": 0.0,
+      "state": {
+        "cortisol": 0.3,
+        "dopamine": 0.5,
+        "adrenaline": 0.3,
+        "valence": 0.1,
+        "arousal": 0.4,
+        "dominance": 0.5
+      },
+      "response": "What are some of the things you've been considering lately? I'm curious to hear what's been on your mind as you think about your next steps.",
+      "latency": 1.5493,
+      "response_length": 140
+    },
+    {
+      "test_case": 4,
+      "input": "I just got promoted and I am so happy",
+      "detected_emotion": "positive",
+      "intensity": 0.75,
+      "state": {
+        "cortisol": 0.15,
+        "dopamine": 0.8,
+        "adrenaline": 0.4,
+        "valence": 0.8,
+        "arousal": 0.6,
+        "dominance": 0.75
+      },
+      "response": "Congratulations on your promotion! I'm here to celebrate with you.",
+      "latency": 4.1233,
+      "response_length": 66
+    }
+  ]
+}

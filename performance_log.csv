@@ -1,0 +1,5 @@
+test_case,input,emotion,intensity,latency,response_length
+1,my friend just died,grief,0.75,3.4395,74
+2,I am so anxious and scared right now,distress,1.0,3.146,101
+3,what should I do with my career?,none,0.0,1.5493,140
+4,I just got promoted and I am so happy,positive,0.75,4.1233,66
