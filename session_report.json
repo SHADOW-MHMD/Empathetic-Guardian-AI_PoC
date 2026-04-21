@@ -1,73 +1,194 @@
 {
+  "timestamp": "2026-04-21T08:35:18.597688+00:00",
   "total_tests": 4,
+  "stress_trend": [
+    34.5,
+    50.365,
+    50.754,
+    46.731
+  ],
+  "heart_state_snapshots": [
+    {
+      "emotion": "emotionally mixed but stable",
+      "stress": 34.5,
+      "fear": 26.725,
+      "sadness": 25.48,
+      "happiness": 46.75,
+      "motivation": 53.9,
+      "overthinking": 31.343,
+      "heart_rate": 83.714,
+      "hrv": 64.369
+    },
+    {
+      "emotion": "emotionally mixed but stable",
+      "stress": 50.365,
+      "fear": 43.107,
+      "sadness": 33.661,
+      "happiness": 38.295,
+      "motivation": 37.721,
+      "overthinking": 44.519,
+      "heart_rate": 93.399,
+      "hrv": 51.643
+    },
+    {
+      "emotion": "emotionally mixed but stable",
+      "stress": 50.754,
+      "fear": 45.889,
+      "sadness": 32.614,
+      "happiness": 38.947,
+      "motivation": 37.841,
+      "overthinking": 44.405,
+      "heart_rate": 94.139,
+      "hrv": 50.839
+    },
+    {
+      "emotion": "emotionally mixed but stable",
+      "stress": 46.731,
+      "fear": 46.731,
+      "sadness": 26.71,
+      "happiness": 53.26,
+      "motivation": 49.244,
+      "overthinking": 39.724,
+      "heart_rate": 91.909,
+      "hrv": 54.277
+    }
+  ],
   "results": [
     {
       "test_case": 1,
       "input": "my friend just died",
       "detected_emotion": "grief",
+      "inferred_emotion": "emotionally mixed but stable",
       "intensity": 0.75,
-      "state": {
-        "cortisol": 0.82,
-        "dopamine": 0.3,
-        "adrenaline": 0.6,
-        "valence": -0.9,
-        "arousal": 0.3,
-        "dominance": 0.2
+      "stimulus": {
+        "stress_input": 0.85,
+        "positive_input": 0.05
       },
-      "response": "I'm so sorry \u2014 losing your friend is devastating. I'm right here with you.",
-      "latency": 3.4395,
-      "response_length": 74
+      "heart_state": {
+        "emotion": "emotionally mixed but stable",
+        "stress": 34.5,
+        "fear": 26.725,
+        "sadness": 25.48,
+        "happiness": 46.75,
+        "motivation": 53.9,
+        "overthinking": 31.343,
+        "heart_rate": 83.714,
+        "hrv": 64.369
+      },
+      "state": {
+        "cortisol": 0.345,
+        "dopamine": 0.4675,
+        "adrenaline": 0.26725,
+        "valence": 0.2127,
+        "arousal": 0.306125,
+        "dominance": 0.539
+      },
+      "response": "I'm really sorry. That's a heavy loss. I'm here with you. You don't have to carry this alone right now.",
+      "latency": 3.5592,
+      "response_length": 103,
+      "tone_aligned": true
     },
     {
       "test_case": 2,
       "input": "I am so anxious and scared right now",
       "detected_emotion": "distress",
+      "inferred_emotion": "emotionally mixed but stable",
       "intensity": 1.0,
-      "state": {
-        "cortisol": 0.65,
-        "dopamine": 0.3,
-        "adrenaline": 0.7,
-        "valence": -0.7,
-        "arousal": 0.8,
-        "dominance": 0.3
+      "stimulus": {
+        "stress_input": 0.95,
+        "positive_input": 0.05
       },
-      "response": "That sounds really overwhelming, and it makes sense you're feeling this way. I'm right here with you.",
-      "latency": 3.146,
-      "response_length": 101
+      "heart_state": {
+        "emotion": "emotionally mixed but stable",
+        "stress": 50.365,
+        "fear": 43.107,
+        "sadness": 33.661,
+        "happiness": 38.295,
+        "motivation": 37.721,
+        "overthinking": 44.519,
+        "heart_rate": 93.399,
+        "hrv": 51.643
+      },
+      "state": {
+        "cortisol": 0.50365,
+        "dopamine": 0.38295,
+        "adrenaline": 0.43107,
+        "valence": 0.04634,
+        "arousal": 0.46736,
+        "dominance": 0.37721
+      },
+      "response": "I can sense your fear and anxiety. It's okay to feel this way. I'm here with you.",
+      "latency": 3.669,
+      "response_length": 81,
+      "tone_aligned": true
     },
     {
       "test_case": 3,
       "input": "what should I do with my career?",
       "detected_emotion": "none",
+      "inferred_emotion": "emotionally mixed but stable",
       "intensity": 0.0,
-      "state": {
-        "cortisol": 0.3,
-        "dopamine": 0.5,
-        "adrenaline": 0.3,
-        "valence": 0.1,
-        "arousal": 0.4,
-        "dominance": 0.5
+      "stimulus": {
+        "stress_input": 0.15,
+        "positive_input": 0.2
       },
-      "response": "What are some of the things you've been considering lately? I'm curious to hear what's been on your mind as you think about your next steps.",
-      "latency": 1.5493,
-      "response_length": 140
+      "heart_state": {
+        "emotion": "emotionally mixed but stable",
+        "stress": 50.754,
+        "fear": 45.889,
+        "sadness": 32.614,
+        "happiness": 38.947,
+        "motivation": 37.841,
+        "overthinking": 44.405,
+        "heart_rate": 94.139,
+        "hrv": 50.839
+      },
+      "state": {
+        "cortisol": 0.50754,
+        "dopamine": 0.38947,
+        "adrenaline": 0.45889,
+        "valence": 0.06333,
+        "arousal": 0.483215,
+        "dominance": 0.37841
+      },
+      "response": "What part of your career path is feeling the most uncertain or pressing to you right now? I'm curious if you're looking for a total change or just trying to navigate where you currently are.",
+      "latency": 2.3652,
+      "response_length": 190,
+      "tone_aligned": false
     },
     {
       "test_case": 4,
       "input": "I just got promoted and I am so happy",
       "detected_emotion": "positive",
+      "inferred_emotion": "emotionally mixed but stable",
       "intensity": 0.75,
+      "stimulus": {
+        "stress_input": 0.05,
+        "positive_input": 0.85
+      },
+      "heart_state": {
+        "emotion": "emotionally mixed but stable",
+        "stress": 46.731,
+        "fear": 46.731,
+        "sadness": 26.71,
+        "happiness": 53.26,
+        "motivation": 49.244,
+        "overthinking": 39.724,
+        "heart_rate": 91.909,
+        "hrv": 54.277
+      },
       "state": {
-        "cortisol": 0.15,
-        "dopamine": 0.8,
-        "adrenaline": 0.4,
-        "valence": 0.8,
-        "arousal": 0.6,
-        "dominance": 0.75
+        "cortisol": 0.46731,
+        "dopamine": 0.5326,
+        "adrenaline": 0.46731,
+        "valence": 0.2655,
+        "arousal": 0.46731,
+        "dominance": 0.49244
       },
       "response": "Congratulations on your promotion! I'm here to celebrate with you.",
-      "latency": 4.1233,
-      "response_length": 66
+      "latency": 2.29,
+      "response_length": 66,
+      "tone_aligned": true
     }
   ]
 }

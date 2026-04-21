@@ -75,7 +75,32 @@ def _style_rules(state: Dict[str, float]) -> Dict[str, str]:
     }
 
 
-def _build_prompt(user_input: str, state: Dict[str, float], emotional_context: Dict = None) -> Tuple[str, str]:
+def _describe_virtual_heart(virtual_heart_state: Dict[str, float]) -> str:
+    emotion = str(virtual_heart_state.get("emotion", "emotionally mixed but stable")).strip() or "emotionally mixed but stable"
+    stress = float(virtual_heart_state.get("stress", 0.0))
+    overthinking = float(virtual_heart_state.get("overthinking", 0.0))
+    motivation = float(virtual_heart_state.get("motivation", 50.0))
+
+    load_label = "moderate"
+    if stress >= 65.0 or overthinking >= 65.0:
+        load_label = "high"
+    elif stress <= 25.0 and overthinking <= 25.0:
+        load_label = "low"
+
+    momentum_label = "steady"
+    if motivation >= 65.0:
+        momentum_label = "forward-leaning"
+    elif motivation <= 35.0:
+        momentum_label = "fragile"
+
+    return (
+        "You are an empathetic assistant connected to a virtual heart system. "
+        f"The user is currently in a {emotion} state, with {load_label} emotional load "
+        f"and {momentum_label} inner momentum."
+    )
+
+
+def _build_prompt(user_input: str, state: Dict[str, float], emotional_context: Dict = None, virtual_heart_state: Dict = None) -> Tuple[str, str]:
     if emotional_context is None:
         emotional_context = {
             "type": "none",
@@ -83,6 +108,8 @@ def _build_prompt(user_input: str, state: Dict[str, float], emotional_context: D
             "confidence": 0.0,
             "is_confident": False,
         }
+    if virtual_heart_state is None:
+        virtual_heart_state = {}
     
     rules = _style_rules(state)
     is_confident = emotional_context.get("is_confident", False)
@@ -100,6 +127,7 @@ def _build_prompt(user_input: str, state: Dict[str, float], emotional_context: D
         "- Use simple, natural language.\n"
         "- Do not invent external facts. Ground everything in what the user shared.\n\n"
     )
+    system_prompt += _describe_virtual_heart(virtual_heart_state) + "\n\n"
     
     if emotion_type == "grief":
         system_prompt += (
@@ -222,13 +250,23 @@ def _normalized_api_key() -> str:
     return raw
 
 
-def generate_response(user_input: str, state: Dict[str, float], emotional_context: Dict = None) -> str:
+def generate_response(
+    user_input: str,
+    state: Dict[str, float],
+    emotional_context: Dict = None,
+    virtual_heart_state: Dict = None,
+) -> str:
     """Generate an emotionally controlled response from user input + internal state."""
     if emotional_context is None:
         emotional_context = {"type": "none", "intensity": 0.0}
     
     safe = _safe_state(state)
-    system_prompt, user_prompt = _build_prompt(user_input=user_input, state=safe, emotional_context=emotional_context)
+    system_prompt, user_prompt = _build_prompt(
+        user_input=user_input,
+        state=safe,
+        emotional_context=emotional_context,
+        virtual_heart_state=virtual_heart_state,
+    )
 
     api_key = _normalized_api_key()
     if not api_key:

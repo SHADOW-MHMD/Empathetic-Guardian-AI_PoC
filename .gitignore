@@ -81,6 +81,15 @@ wheels/
 somatic_logs.csv
 Mkfile.old
 dkms.conf
+session_report.json
+performance_log.csv
+performance_trend.json
+performance_plot.png
+
+# Synthetic dataset outputs
+virtual_emotion_generator/synthetic_emotion_dataset.jsonl
+virtual_emotion_generator/synthetic_emotion_dataset_with_llm.jsonl
+virtual_emotion_generator/synthetic_emotion_dataset_empathy.jsonl
 
 # debug information files
 *.dwo
